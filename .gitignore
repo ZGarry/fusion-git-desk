@@ -15,5 +15,6 @@
 # Local artifacts
 *.exe
 *.log
+/release-artifacts/
 .DS_Store
 Thumbs.db
