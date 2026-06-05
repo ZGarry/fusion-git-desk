@@ -63,6 +63,9 @@ const branches = ref<BranchResponse | null>(null)
 const updateResults = ref<UpdateResult[]>([])
 
 let refreshTimer: number | undefined
+let settingsSaveTimer: number | undefined
+let diffRequestId = 0
+let branchesRequestId = 0
 
 const filteredRepositories = computed(() => {
   const keyword = repoFilter.value.trim().toLowerCase()
@@ -113,6 +116,10 @@ onBeforeUnmount(() => {
   if (refreshTimer) {
     window.clearInterval(refreshTimer)
   }
+  if (settingsSaveTimer) {
+    window.clearTimeout(settingsSaveTimer)
+    void api.saveSettings({ ...settings })
+  }
 })
 
 watch(selectedPath, () => {
@@ -125,10 +132,20 @@ watch(activeDiffMode, () => {
 })
 
 watch(
+  () => [settings.autoRefresh, settings.refreshIntervalSeconds] as const,
+  () => {
+    if (!state.booting) {
+      setupRefreshTimer()
+    }
+  },
+)
+
+watch(
   settings,
   () => {
-    setupRefreshTimer()
-    void api.saveSettings({ ...settings })
+    if (!state.booting) {
+      queueSaveSettings()
+    }
   },
   { deep: true },
 )
@@ -204,28 +221,60 @@ async function loadSelectedDetails() {
 }
 
 async function loadDiff() {
-  if (!selectedRepo.value) return
+  if (!selectedRepo.value) {
+    diffRequestId++
+    diff.value = null
+    state.loadingDiff = false
+    return
+  }
+
+  const repoPath = selectedRepo.value.path
+  const mode = activeDiffMode.value
+  const filePath = selectedFilePath.value
+  const requestId = ++diffRequestId
   state.loadingDiff = true
   try {
-    diff.value = selectedFilePath.value
-      ? await api.getRepositoryFileDiff(selectedRepo.value.path, activeDiffMode.value, selectedFilePath.value)
-      : await api.getRepositoryDiff(selectedRepo.value.path, activeDiffMode.value)
+    const nextDiff = filePath
+      ? await api.getRepositoryFileDiff(repoPath, mode, filePath)
+      : await api.getRepositoryDiff(repoPath, mode)
+    if (isCurrentDiffRequest(requestId, repoPath, mode, filePath)) {
+      diff.value = nextDiff
+    }
   } catch (error) {
-    state.error = messageOf(error)
+    if (requestId === diffRequestId) {
+      state.error = messageOf(error)
+    }
   } finally {
-    state.loadingDiff = false
+    if (requestId === diffRequestId) {
+      state.loadingDiff = false
+    }
   }
 }
 
 async function loadBranches() {
-  if (!selectedRepo.value) return
+  if (!selectedRepo.value) {
+    branchesRequestId++
+    branches.value = null
+    state.loadingBranches = false
+    return
+  }
+
+  const repoPath = selectedRepo.value.path
+  const requestId = ++branchesRequestId
   state.loadingBranches = true
   try {
-    branches.value = await api.getBranches(selectedRepo.value.path)
+    const nextBranches = await api.getBranches(repoPath)
+    if (requestId === branchesRequestId && selectedRepo.value?.path === repoPath) {
+      branches.value = nextBranches
+    }
   } catch (error) {
-    state.error = messageOf(error)
+    if (requestId === branchesRequestId) {
+      state.error = messageOf(error)
+    }
   } finally {
-    state.loadingBranches = false
+    if (requestId === branchesRequestId) {
+      state.loadingBranches = false
+    }
   }
 }
 
@@ -294,6 +343,23 @@ function setupRefreshTimer() {
   refreshTimer = window.setInterval(() => {
     void runAutoCycle()
   }, settings.refreshIntervalSeconds * 1000)
+}
+
+function queueSaveSettings() {
+  if (settingsSaveTimer) {
+    window.clearTimeout(settingsSaveTimer)
+  }
+  settingsSaveTimer = window.setTimeout(() => {
+    settingsSaveTimer = undefined
+    void api.saveSettings({ ...settings })
+  }, 250)
+}
+
+function isCurrentDiffRequest(requestId: number, repoPath: string, mode: DiffMode, filePath: string) {
+  return requestId === diffRequestId
+    && selectedRepo.value?.path === repoPath
+    && activeDiffMode.value === mode
+    && selectedFilePath.value === filePath
 }
 
 async function runAutoCycle() {

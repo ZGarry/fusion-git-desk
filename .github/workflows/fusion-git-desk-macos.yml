@@ -12,7 +12,7 @@ on:
       - ".github/workflows/fusion-git-desk-macos.yml"
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build-macos:
@@ -64,3 +64,12 @@ jobs:
           path: |
             build/dist/*.zip
             build/dist/*.dmg
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            build/dist/*.zip
+            build/dist/*.dmg
+          generate_release_notes: true

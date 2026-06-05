@@ -789,16 +789,24 @@ func (g *GitService) untrackedDiffFile(repoPath string, path string) (DiffFile, 
 	}
 	fullPath := filepath.Join(repoPath, cleanPath)
 	rel, err := filepath.Rel(repoPath, fullPath)
-	if err != nil || strings.HasPrefix(rel, "..") {
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) || filepath.IsAbs(rel) {
 		return DiffFile{}, false, fmt.Errorf("file is outside repository: %s", path)
 	}
-	info, err := os.Stat(fullPath)
+	info, err := os.Lstat(fullPath)
 	if err != nil {
 		return DiffFile{}, false, err
 	}
 	diffFile := DiffFile{NewPath: filepath.ToSlash(path), Status: "untracked", Lines: make([]DiffLine, 0)}
 	if info.IsDir() {
 		diffFile.Lines = append(diffFile.Lines, DiffLine{Kind: "meta", Content: "Directory is untracked. Scan with -uall should normally list its files."})
+		return diffFile, false, nil
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		diffFile.Lines = append(diffFile.Lines, DiffLine{Kind: "meta", Content: "Symbolic link preview is not displayed."})
+		return diffFile, false, nil
+	}
+	if !info.Mode().IsRegular() {
+		diffFile.Lines = append(diffFile.Lines, DiffLine{Kind: "meta", Content: "Only regular text files are displayed."})
 		return diffFile, false, nil
 	}
 	content, truncated, err := readPreviewFile(fullPath, maxUntrackedPreviewBytes)
@@ -976,11 +984,27 @@ func parseUnifiedDiff(raw string) []DiffFile {
 }
 
 func parseDiffGitLine(line string) (string, string) {
+	if rest, ok := strings.CutPrefix(line, "diff --git "); ok {
+		if oldPath, newPath, split := splitDiffGitPaths(rest); split {
+			return cleanDiffPath(oldPath), cleanDiffPath(newPath)
+		}
+	}
 	fields := strings.Fields(line)
 	if len(fields) < 4 {
 		return "", ""
 	}
 	return cleanDiffPath(fields[2]), cleanDiffPath(fields[3])
+}
+
+func splitDiffGitPaths(value string) (string, string, bool) {
+	if !strings.HasPrefix(value, "a/") {
+		return "", "", false
+	}
+	index := strings.Index(value, " b/")
+	if index < 0 {
+		return "", "", false
+	}
+	return value[:index], strings.TrimSpace(value[index+1:]), true
 }
 
 func cleanDiffPath(path string) string {

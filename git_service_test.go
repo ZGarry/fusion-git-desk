@@ -58,3 +58,72 @@ func TestUntrackedDiffFileRendersTextPreview(t *testing.T) {
 		t.Fatalf("unexpected diff lines: %#v", diffFile.Lines)
 	}
 }
+
+func TestUntrackedDiffFileAllowsDotPrefixedName(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "..notes.txt")
+	if err := os.WriteFile(path, []byte("safe\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	diffFile, _, err := NewGitService().untrackedDiffFile(root, "..notes.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diffFile.Additions != 1 {
+		t.Fatalf("expected preview for dot-prefixed file, got %#v", diffFile)
+	}
+}
+
+func TestUntrackedDiffFileRejectsParentTraversal(t *testing.T) {
+	root := t.TempDir()
+	outside := filepath.Join(filepath.Dir(root), "outside.txt")
+	if err := os.WriteFile(outside, []byte("outside\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = os.Remove(outside)
+	})
+
+	_, _, err := NewGitService().untrackedDiffFile(root, "../outside.txt")
+	if err == nil {
+		t.Fatal("expected parent traversal to be rejected")
+	}
+}
+
+func TestUntrackedDiffFileDoesNotFollowSymlink(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(filepath.Dir(root), "outside-target.txt")
+	link := filepath.Join(root, "linked.txt")
+	if err := os.WriteFile(target, []byte("outside\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = os.Remove(target)
+	})
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	diffFile, truncated, err := NewGitService().untrackedDiffFile(root, "linked.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if truncated {
+		t.Fatal("symlink metadata should not be truncated")
+	}
+	if diffFile.Additions != 0 || len(diffFile.Lines) != 1 || diffFile.Lines[0].Kind != "meta" {
+		t.Fatalf("expected symlink metadata only, got %#v", diffFile)
+	}
+}
+
+func TestParseDiffGitLineKeepsSpaces(t *testing.T) {
+	oldPath, newPath := parseDiffGitLine("diff --git a/folder/old name.txt b/folder/new name.txt")
+
+	if oldPath != "folder/old name.txt" {
+		t.Fatalf("unexpected old path: %q", oldPath)
+	}
+	if newPath != "folder/new name.txt" {
+		t.Fatalf("unexpected new path: %q", newPath)
+	}
+}
