@@ -27,7 +27,7 @@ fi
 
 APP_NAME="FusionGitDesk"
 DIST_DIR="$ROOT_DIR/build/dist"
-APP_PATH="$ROOT_DIR/build/bin/${APP_NAME}.app"
+APP_PATH="$ROOT_DIR/build/bin/fusion-git-desk.app"
 
 rm -rf "$DIST_DIR"
 mkdir -p "$DIST_DIR"
@@ -35,7 +35,12 @@ mkdir -p "$DIST_DIR"
 wails build -clean -platform darwin/universal
 
 if [[ ! -d "$APP_PATH" ]]; then
-  echo "Expected app bundle was not generated: $APP_PATH" >&2
+  APP_PATH="$(find "$ROOT_DIR/build/bin" -maxdepth 1 -type d -name "*.app" | head -n 1 || true)"
+fi
+
+if [[ -z "${APP_PATH:-}" || ! -d "$APP_PATH" ]]; then
+  echo "Expected app bundle was not generated under $ROOT_DIR/build/bin" >&2
+  find "$ROOT_DIR/build/bin" -maxdepth 2 -print >&2 || true
   exit 1
 fi
 
