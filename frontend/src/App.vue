@@ -20,6 +20,7 @@ import type {
   BranchInfo,
   BranchResponse,
   ChangedFile,
+  DiffFile,
   DiffMode,
   DiffResponse,
   Repository,
@@ -62,6 +63,10 @@ const diff = ref<DiffResponse | null>(null)
 const branches = ref<BranchResponse | null>(null)
 const updateResults = ref<UpdateResult[]>([])
 
+const maxRenderedChangedFiles = 600
+const maxRenderedDiffFiles = 80
+const maxRenderedDiffLines = 4000
+
 let refreshTimer: number | undefined
 let settingsSaveTimer: number | undefined
 let diffRequestId = 0
@@ -80,20 +85,33 @@ const filteredRepositories = computed(() => {
   })
 })
 
-const selectedRepo = computed(() => repositories.value.find((repo) => repo.path === selectedPath.value) ?? null)
+const repositoryByPath = computed(() => {
+  const byPath = new Map<string, Repository>()
+  for (const repo of repositories.value) {
+    byPath.set(repo.path, repo)
+  }
+  return byPath
+})
+
+const selectedRepo = computed(() => repositoryByPath.value.get(selectedPath.value) ?? null)
 
 const repoStats = computed(() => {
-  const total = repositories.value.length
-  const dirty = repositories.value.filter((repo) => !repo.isClean).length
-  const behind = repositories.value.filter((repo) => repo.behind > 0).length
-  const ahead = repositories.value.filter((repo) => repo.ahead > 0).length
-  return { total, dirty, behind, ahead }
+  const stats = { total: repositories.value.length, dirty: 0, behind: 0, ahead: 0 }
+  for (const repo of repositories.value) {
+    if (!repo.isClean) stats.dirty++
+    if (repo.behind > 0) stats.behind++
+    if (repo.ahead > 0) stats.ahead++
+  }
+  return stats
 })
 
 const selectedFiles = computed(() => selectedRepo.value?.status.files ?? [])
 const selectedFile = computed(() => selectedFiles.value.find((file) => file.path === selectedFilePath.value) ?? null)
+const renderedSelectedFiles = computed(() => selectedFiles.value.slice(0, maxRenderedChangedFiles))
+const hiddenSelectedFileCount = computed(() => Math.max(0, selectedFiles.value.length - renderedSelectedFiles.value.length))
 const localBranches = computed(() => (branches.value?.branches ?? []).filter((branch) => !branch.remote))
 const remoteBranches = computed(() => (branches.value?.branches ?? []).filter((branch) => branch.remote))
+const renderedDiff = computed(() => buildRenderedDiff(diff.value))
 
 onMounted(async () => {
   try {
@@ -411,6 +429,39 @@ function changedCount(repo: Repository) {
   return repo.status.files.length
 }
 
+function buildRenderedDiff(source: DiffResponse | null) {
+  if (!source) {
+    return null
+  }
+
+  const files: DiffFile[] = []
+  let renderedLines = 0
+  let hiddenLines = 0
+  let remainingLines = maxRenderedDiffLines
+
+  for (const file of source.files) {
+    if (files.length >= maxRenderedDiffFiles) {
+      hiddenLines += file.lines.length
+      continue
+    }
+
+    const lineCount = file.lines.length
+    const lines = remainingLines > 0 ? file.lines.slice(0, remainingLines) : []
+    renderedLines += lines.length
+    hiddenLines += lineCount - lines.length
+    remainingLines -= lines.length
+    files.push(lines.length === lineCount ? file : { ...file, lines })
+  }
+
+  return {
+    ...source,
+    files,
+    hiddenFiles: Math.max(0, source.files.length - files.length),
+    hiddenLines,
+    renderedLines,
+  }
+}
+
 function formatDate(value: string) {
   if (!value) return ''
   return new Date(value).toLocaleString('zh-CN', {
@@ -636,18 +687,22 @@ function messageOf(error: unknown) {
           <div v-else-if="diff?.error" class="empty large danger-text">
             {{ diff.error }}
           </div>
-          <div v-else-if="!diff?.files.length" class="empty large">
+          <div v-else-if="!renderedDiff?.files.length" class="empty large">
             {{ diff?.note || '当前视图没有 diff' }}
           </div>
           <template v-else>
-            <div v-if="diff.truncated" class="diff-warning">
+            <div v-if="renderedDiff.truncated" class="diff-warning">
               Diff 内容较大，已截断显示。
             </div>
-            <div v-if="diff.note" class="diff-warning">
-              {{ diff.note }}
+            <div v-if="renderedDiff.hiddenFiles || renderedDiff.hiddenLines" class="diff-warning">
+              Diff 较大，当前渲染 {{ renderedDiff.files.length }} 个文件、{{ renderedDiff.renderedLines }} 行；仍有
+              {{ renderedDiff.hiddenFiles }} 个文件、{{ renderedDiff.hiddenLines }} 行未渲染。
+            </div>
+            <div v-if="renderedDiff.note" class="diff-warning">
+              {{ renderedDiff.note }}
             </div>
 
-            <article v-for="file in diff.files" :key="`${file.oldPath}-${file.newPath}`" class="diff-file">
+            <article v-for="file in renderedDiff.files" :key="`${file.oldPath}-${file.newPath}`" class="diff-file">
               <header>
                 <div>
                   <strong>{{ file.newPath || file.oldPath }}</strong>
@@ -720,7 +775,7 @@ function messageOf(error: unknown) {
           <div v-if="!selectedFiles.length" class="empty compact">无变更</div>
           <div v-else class="file-list">
             <button
-              v-for="file in selectedFiles"
+              v-for="file in renderedSelectedFiles"
               :key="`${file.status}-${file.path}`"
               class="file-row"
               :class="{ active: file.path === selectedFilePath }"
@@ -729,6 +784,9 @@ function messageOf(error: unknown) {
               <span class="file-status" :class="{ staged: file.staged }">{{ file.status }}</span>
               <span class="file-name">{{ file.path }}</span>
             </button>
+            <div v-if="hiddenSelectedFileCount" class="list-limit-note">
+              还有 {{ hiddenSelectedFileCount }} 个变更文件未渲染。
+            </div>
           </div>
         </section>
 

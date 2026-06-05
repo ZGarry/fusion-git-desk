@@ -28,6 +28,7 @@ const (
 	maxUntrackedPreviewBytes  = 180000
 	maxScanInspectWorkers     = 12
 	maxUpdateWorkers          = 4
+	statusUntrackedMode       = "-unormal"
 )
 
 type GitService struct {
@@ -298,7 +299,7 @@ func (g *GitService) Inspect(path string) (Repository, error) {
 		head = strings.TrimSpace(revParseLines[1])
 	}
 
-	statusOutput, stderr, err := g.runGit(path, g.commandTimeout, "status", "--porcelain=v1", "-uall", "-b", "--ahead-behind")
+	statusOutput, stderr, err := g.runGit(path, g.commandTimeout, "status", "--porcelain=v1", statusUntrackedMode, "-b", "--ahead-behind")
 	if err != nil {
 		return Repository{}, fmt.Errorf("git status failed: %s", firstNonEmpty(stderr, err.Error()))
 	}
@@ -346,7 +347,7 @@ func (g *GitService) repositoryStatus(path string) (string, RepoStatus, error) {
 	if err != nil {
 		return "", RepoStatus{}, err
 	}
-	statusOutput, stderr, err := g.runGit(repoPath, g.commandTimeout, "status", "--porcelain=v1", "-uall", "-b", "--ahead-behind")
+	statusOutput, stderr, err := g.runGit(repoPath, g.commandTimeout, "status", "--porcelain=v1", statusUntrackedMode, "-b", "--ahead-behind")
 	if err != nil {
 		return "", RepoStatus{}, fmt.Errorf("git status failed: %s", firstNonEmpty(stderr, err.Error()))
 	}
@@ -422,11 +423,11 @@ func (g *GitService) Diff(path string, mode string) (DiffResponse, error) {
 	response.Raw = raw
 	response.Files = parseUnifiedDiff(raw)
 	if mode == diffModeWorking {
-		untrackedDiffs, untrackedTruncated := g.untrackedDiffFiles(repoPath, untrackedPaths(status.Files), maxUntrackedFullDiffFiles)
+		untrackedDiffs, untrackedTruncated := untrackedSummaryFiles(untrackedPaths(status.Files), maxUntrackedFullDiffFiles)
 		response.Files = append(response.Files, untrackedDiffs...)
 		if untrackedTruncated {
 			response.Truncated = true
-			response.Note = "Only the first untracked files are shown. Select a file on the right to inspect it directly."
+			response.Note = "Only the first untracked paths are shown. Select a file on the right to inspect it directly."
 		}
 	}
 	if len(response.Files) == 0 {
@@ -561,7 +562,7 @@ func (g *GitService) lastCommit(path string) CommitInfo {
 func (g *GitService) runGit(repo string, timeout time.Duration, args ...string) (string, string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	cmdArgs := append([]string{"-c", "core.quotePath=false", "-C", repo}, args...)
+	cmdArgs := append([]string{"-c", "core.quotePath=false", "--no-optional-locks", "-C", repo}, args...)
 	cmd := exec.CommandContext(ctx, "git", cmdArgs...)
 	configureHiddenCommand(cmd)
 	var stdout bytes.Buffer
@@ -682,21 +683,24 @@ func countStatus(status *RepoStatus, x rune, y rune) {
 	if y != ' ' && y != '?' {
 		status.Unstaged++
 	}
-	for _, code := range []rune{x, y} {
-		switch code {
-		case 'A':
-			status.Added++
-		case 'M':
-			status.Modified++
-		case 'D':
-			status.Deleted++
-		case 'R':
-			status.Renamed++
-		case 'C':
-			status.Copied++
-		case 'U':
-			status.Conflicted++
-		}
+	countStatusCode(status, x)
+	countStatusCode(status, y)
+}
+
+func countStatusCode(status *RepoStatus, code rune) {
+	switch code {
+	case 'A':
+		status.Added++
+	case 'M':
+		status.Modified++
+	case 'D':
+		status.Deleted++
+	case 'R':
+		status.Renamed++
+	case 'C':
+		status.Copied++
+	case 'U':
+		status.Conflicted++
 	}
 }
 
@@ -759,7 +763,7 @@ func isUntrackedStatus(status string) bool {
 	return strings.TrimSpace(status) == "??"
 }
 
-func (g *GitService) untrackedDiffFiles(repoPath string, paths []string, limit int) ([]DiffFile, bool) {
+func untrackedSummaryFiles(paths []string, limit int) ([]DiffFile, bool) {
 	if limit <= 0 {
 		limit = maxUntrackedFullDiffFiles
 	}
@@ -769,15 +773,14 @@ func (g *GitService) untrackedDiffFiles(repoPath string, paths []string, limit i
 	}
 	files := make([]DiffFile, 0, len(paths))
 	for _, path := range paths {
-		file, fileTruncated, err := g.untrackedDiffFile(repoPath, path)
-		if err != nil {
-			files = append(files, DiffFile{NewPath: path, Status: "untracked", Lines: []DiffLine{{Kind: "meta", Content: err.Error()}}})
-			continue
-		}
-		if fileTruncated {
-			truncated = true
-		}
-		files = append(files, file)
+		files = append(files, DiffFile{
+			NewPath: filepath.ToSlash(path),
+			Status:  "untracked",
+			Lines: []DiffLine{{
+				Kind:    "meta",
+				Content: "Untracked content preview is loaded only when this file is selected.",
+			}},
+		})
 	}
 	return files, truncated
 }

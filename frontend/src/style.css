@@ -700,6 +700,12 @@ input:focus {
   border-bottom-color: #bdd5c6;
 }
 
+.list-limit-note {
+  padding: 8px 2px 2px;
+  color: #7a5a22;
+  font-size: 12px;
+}
+
 .file-status {
   min-height: 22px;
   border-radius: 6px;

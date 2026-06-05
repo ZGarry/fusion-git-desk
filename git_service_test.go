@@ -59,6 +59,20 @@ func TestUntrackedDiffFileRendersTextPreview(t *testing.T) {
 	}
 }
 
+func TestUntrackedSummaryFilesDoNotReadFileContent(t *testing.T) {
+	files, truncated := untrackedSummaryFiles([]string{"one.txt", "two.txt", "three.txt"}, 2)
+
+	if !truncated {
+		t.Fatal("expected summary list to report truncation")
+	}
+	if len(files) != 2 {
+		t.Fatalf("expected 2 summary files, got %d", len(files))
+	}
+	if files[0].Additions != 0 || len(files[0].Lines) != 1 || files[0].Lines[0].Kind != "meta" {
+		t.Fatalf("expected metadata-only summary file, got %#v", files[0])
+	}
+}
+
 func TestUntrackedDiffFileAllowsDotPrefixedName(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "..notes.txt")
