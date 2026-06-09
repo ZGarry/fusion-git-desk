@@ -52,6 +52,8 @@ const state = reactive({
   notice: '',
   lastScan: '',
   autoCycleNote: '自动刷新已暂停',
+  autoCycleFailureCount: 0,
+  autoCycleLastError: '',
 })
 
 const rootInput = ref('')
@@ -113,6 +115,16 @@ const hiddenSelectedFileCount = computed(() => Math.max(0, selectedFiles.value.l
 const localBranches = computed(() => (branches.value?.branches ?? []).filter((branch) => !branch.remote))
 const remoteBranches = computed(() => (branches.value?.branches ?? []).filter((branch) => branch.remote))
 const renderedDiff = computed(() => buildRenderedDiff(diff.value))
+const autoCycleAlert = computed(() => {
+  if (state.autoCycleFailureCount === 0) return ''
+  const detail = state.autoCycleLastError ? `：${state.autoCycleLastError}` : ''
+  return `连续失败 ${state.autoCycleFailureCount} 次${detail}`
+})
+const autoCycleSeverityClass = computed(() => {
+  if (state.autoCycleFailureCount >= 3) return 'danger'
+  if (state.autoCycleFailureCount > 0 || state.autoCycleNote.includes('跳过')) return 'warn'
+  return ''
+})
 
 onMounted(async () => {
   try {
@@ -384,6 +396,8 @@ function setupRefreshTimer() {
 
   if (!settings.autoRefresh) {
     state.autoCycleNote = '自动刷新已暂停'
+    state.autoCycleFailureCount = 0
+    state.autoCycleLastError = ''
     return
   }
   state.autoCycleNote = `${autoCycleLabel()}每 ${settings.refreshIntervalSeconds} 秒运行`
@@ -413,10 +427,12 @@ async function runAutoCycle() {
   const modeLabel = autoCycleLabel()
   if (!rootInput.value.trim()) {
     state.autoCycleNote = `${modeLabel}待命：未设置工作区`
+    clearAutoCycleFailure()
     return
   }
   if (repositories.value.length === 0) {
     state.autoCycleNote = `${modeLabel}待命：当前没有仓库`
+    clearAutoCycleFailure()
     return
   }
   if (state.scanning) {
@@ -431,17 +447,38 @@ async function runAutoCycle() {
   const finishedAt = formatDate(new Date().toISOString())
   if (settings.autoPullCleanRepos) {
     const results = await updateRepositories('pull', 'all', true)
-    state.autoCycleNote = results
-      ? summarizeAutoCycleUpdate(modeLabel, results, 'pull', finishedAt)
-      : `${modeLabel}结束于 ${finishedAt}`
+    if (!results) {
+      recordAutoCycleFailure(`${modeLabel}结束于 ${finishedAt}`, state.error || '自动拉取未返回结果')
+      return
+    }
+    state.autoCycleNote = summarizeAutoCycleUpdate(modeLabel, results, 'pull', finishedAt)
+    const failureMessage = summarizeAutoCycleFailure(results)
+    if (failureMessage) {
+      recordAutoCycleFailure(state.autoCycleNote, failureMessage)
+      return
+    }
+    clearAutoCycleFailure()
   } else if (settings.autoFetch) {
     const results = await updateRepositories('fetch', 'all', true)
-    state.autoCycleNote = results
-      ? summarizeAutoCycleUpdate(modeLabel, results, 'fetch', finishedAt)
-      : `${modeLabel}结束于 ${finishedAt}`
+    if (!results) {
+      recordAutoCycleFailure(`${modeLabel}结束于 ${finishedAt}`, state.error || '自动获取未返回结果')
+      return
+    }
+    state.autoCycleNote = summarizeAutoCycleUpdate(modeLabel, results, 'fetch', finishedAt)
+    const failureMessage = summarizeAutoCycleFailure(results)
+    if (failureMessage) {
+      recordAutoCycleFailure(state.autoCycleNote, failureMessage)
+      return
+    }
+    clearAutoCycleFailure()
   } else {
     const ok = await scanRepositories(false)
     state.autoCycleNote = `${modeLabel}${ok ? '完成' : '结束'}于 ${finishedAt}`
+    if (!ok) {
+      recordAutoCycleFailure(state.autoCycleNote, state.error || '自动刷新扫描失败')
+      return
+    }
+    clearAutoCycleFailure()
   }
 }
 
@@ -500,6 +537,17 @@ function autoCycleLabel() {
   if (settings.autoPullCleanRepos) return 'Auto Pull'
   if (settings.autoFetch) return 'Auto Fetch'
   return '自动刷新'
+}
+
+function clearAutoCycleFailure() {
+  state.autoCycleFailureCount = 0
+  state.autoCycleLastError = ''
+}
+
+function recordAutoCycleFailure(note: string, errorMessage: string) {
+  state.autoCycleNote = note
+  state.autoCycleFailureCount++
+  state.autoCycleLastError = errorMessage
 }
 
 function buildRenderedDiff(source: DiffResponse | null) {
@@ -568,6 +616,11 @@ function summarizeAutoCycleUpdate(modeLabel: string, results: UpdateResult[], mo
   const { success, skipped, failed, verb } = summarizeUpdateCounts(results, mode)
   const status = failed > 0 ? '结束' : '完成'
   return `${modeLabel}${status}于 ${finishedAt}：${verb}成功 ${success}，跳过 ${skipped}，失败 ${failed}`
+}
+
+function summarizeAutoCycleFailure(results: UpdateResult[]) {
+  const failedResult = results.find((result) => !result.success && !result.skipped)
+  return failedResult?.message || ''
 }
 
 function summarizeUpdateCounts(results: UpdateResult[], mode: UpdateMode) {
@@ -669,7 +722,8 @@ function messageOf(error: unknown) {
         <Pause v-else :size="15" />
         <div class="scan-time-copy">
           <span>{{ state.lastScan ? `上次扫描 ${formatDate(state.lastScan)}` : '未扫描' }}</span>
-          <span class="scan-time-note" :class="{ warn: state.autoCycleNote.includes('跳过') }">{{ state.autoCycleNote }}</span>
+          <span class="scan-time-note" :class="autoCycleSeverityClass">{{ state.autoCycleNote }}</span>
+          <span v-if="autoCycleAlert" class="scan-time-note" :class="autoCycleSeverityClass">{{ autoCycleAlert }}</span>
         </div>
       </div>
     </section>

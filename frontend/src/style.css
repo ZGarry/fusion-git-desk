@@ -244,6 +244,10 @@ input:focus {
   color: #8b4f0f;
 }
 
+.scan-time-note.danger {
+  color: #8a2d2b;
+}
+
 .banner {
   display: flex;
   align-items: center;
