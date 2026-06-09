@@ -222,9 +222,26 @@ input:focus {
 
 .scan-time {
   justify-content: flex-end;
+  align-items: flex-start;
   color: #62706b;
   font-size: 12px;
-  white-space: nowrap;
+  white-space: normal;
+  text-align: right;
+}
+
+.scan-time-copy {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+}
+
+.scan-time-note {
+  color: #68766f;
+}
+
+.scan-time-note.warn {
+  color: #8b4f0f;
 }
 
 .banner {

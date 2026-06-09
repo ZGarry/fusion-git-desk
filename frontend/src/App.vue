@@ -51,6 +51,7 @@ const state = reactive({
   error: '',
   notice: '',
   lastScan: '',
+  autoCycleNote: '自动刷新已暂停',
 })
 
 const rootInput = ref('')
@@ -150,7 +151,7 @@ watch(activeDiffMode, () => {
 })
 
 watch(
-  () => [settings.autoRefresh, settings.refreshIntervalSeconds] as const,
+  () => [settings.autoRefresh, settings.refreshIntervalSeconds, settings.autoFetch, settings.autoPullCleanRepos] as const,
   () => {
     if (!state.booting) {
       setupRefreshTimer()
@@ -180,7 +181,10 @@ async function scanRepositories(forceNotice = true) {
   const root = rootInput.value.trim()
   if (!root) {
     state.error = '请输入或选择工作区目录'
-    return
+    return false
+  }
+  if (guardBusyAction('扫描', forceNotice)) {
+    return false
   }
 
   state.error = ''
@@ -204,15 +208,20 @@ async function scanRepositories(forceNotice = true) {
     if (forceNotice) {
       state.notice = `发现 ${repositories.value.length} 个仓库`
     }
+    return !response.error
   } catch (error) {
     state.error = messageOf(error)
+    return false
   } finally {
     state.scanning = false
   }
 }
 
 async function refreshSelected() {
-  if (!selectedRepo.value) return
+  if (!selectedRepo.value) return false
+  if (guardBusyAction('仓库刷新')) {
+    return false
+  }
   state.error = ''
   state.scanning = true
   try {
@@ -221,8 +230,10 @@ async function refreshSelected() {
     selectedPath.value = repo.path
     void loadSelectedDetails()
     state.notice = `${repo.name} 已刷新`
+    return true
   } catch (error) {
     state.error = messageOf(error)
+    return false
   } finally {
     state.scanning = false
   }
@@ -303,7 +314,19 @@ async function updateRepositories(mode: UpdateMode, scope: 'selected' | 'all' = 
       ? [selectedRepo.value.path]
       : []
 
-  if (paths.length === 0) return
+  if (paths.length === 0) return null
+  if (state.scanning) {
+    if (!silent) {
+      state.notice = `扫描或刷新进行中，已跳过${mode === 'pull' ? '拉取' : '获取'}请求`
+    }
+    return null
+  }
+  if (state.updating) {
+    if (!silent) {
+      state.notice = `已有批量更新进行中，已跳过${mode === 'pull' ? '拉取' : '获取'}请求`
+    }
+    return null
+  }
 
   state.error = ''
   state.updating = true
@@ -324,8 +347,10 @@ async function updateRepositories(mode: UpdateMode, scope: 'selected' | 'all' = 
     if (!silent) {
       state.notice = summarizeUpdate(results, mode)
     }
+    return results
   } catch (error) {
     state.error = messageOf(error)
+    return null
   } finally {
     state.updating = false
   }
@@ -357,7 +382,11 @@ function setupRefreshTimer() {
     refreshTimer = undefined
   }
 
-  if (!settings.autoRefresh) return
+  if (!settings.autoRefresh) {
+    state.autoCycleNote = '自动刷新已暂停'
+    return
+  }
+  state.autoCycleNote = `${autoCycleLabel()}每 ${settings.refreshIntervalSeconds} 秒运行`
   refreshTimer = window.setInterval(() => {
     void runAutoCycle()
   }, settings.refreshIntervalSeconds * 1000)
@@ -381,17 +410,39 @@ function isCurrentDiffRequest(requestId: number, repoPath: string, mode: DiffMod
 }
 
 async function runAutoCycle() {
-  if (!rootInput.value.trim() || state.scanning || state.updating) return
+  const modeLabel = autoCycleLabel()
+  if (!rootInput.value.trim()) {
+    state.autoCycleNote = `${modeLabel}待命：未设置工作区`
+    return
+  }
+  if (repositories.value.length === 0) {
+    state.autoCycleNote = `${modeLabel}待命：当前没有仓库`
+    return
+  }
+  if (state.scanning) {
+    state.autoCycleNote = `${modeLabel}跳过：上一次扫描或刷新未完成`
+    return
+  }
+  if (state.updating) {
+    state.autoCycleNote = `${modeLabel}跳过：批量更新进行中`
+    return
+  }
 
+  const finishedAt = formatDate(new Date().toISOString())
   if (settings.autoPullCleanRepos) {
-    await updateRepositories('pull', 'all', true)
-    return
+    const results = await updateRepositories('pull', 'all', true)
+    state.autoCycleNote = results
+      ? summarizeAutoCycleUpdate(modeLabel, results, 'pull', finishedAt)
+      : `${modeLabel}结束于 ${finishedAt}`
+  } else if (settings.autoFetch) {
+    const results = await updateRepositories('fetch', 'all', true)
+    state.autoCycleNote = results
+      ? summarizeAutoCycleUpdate(modeLabel, results, 'fetch', finishedAt)
+      : `${modeLabel}结束于 ${finishedAt}`
+  } else {
+    const ok = await scanRepositories(false)
+    state.autoCycleNote = `${modeLabel}${ok ? '完成' : '结束'}于 ${finishedAt}`
   }
-  if (settings.autoFetch) {
-    await updateRepositories('fetch', 'all', true)
-    return
-  }
-  await scanRepositories(false)
 }
 
 function replaceRepository(repo: Repository) {
@@ -427,6 +478,28 @@ function clearSelectedFile() {
 
 function changedCount(repo: Repository) {
   return repo.status.files.length
+}
+
+function guardBusyAction(action: string, showNotice = true) {
+  let reason = ''
+  if (state.scanning) {
+    reason = '已有扫描或刷新进行中'
+  } else if (state.updating) {
+    reason = '批量更新进行中'
+  }
+  if (!reason) {
+    return false
+  }
+  if (showNotice) {
+    state.notice = `${reason}，已跳过${action}`
+  }
+  return true
+}
+
+function autoCycleLabel() {
+  if (settings.autoPullCleanRepos) return 'Auto Pull'
+  if (settings.autoFetch) return 'Auto Fetch'
+  return '自动刷新'
 }
 
 function buildRenderedDiff(source: DiffResponse | null) {
@@ -487,11 +560,22 @@ function clampNumber(value: number, min: number, max: number) {
 }
 
 function summarizeUpdate(results: UpdateResult[], mode: UpdateMode) {
+  const { success, skipped, failed, verb } = summarizeUpdateCounts(results, mode)
+  return `${verb}完成：成功 ${success}，跳过 ${skipped}，失败 ${failed}`
+}
+
+function summarizeAutoCycleUpdate(modeLabel: string, results: UpdateResult[], mode: UpdateMode, finishedAt: string) {
+  const { success, skipped, failed, verb } = summarizeUpdateCounts(results, mode)
+  const status = failed > 0 ? '结束' : '完成'
+  return `${modeLabel}${status}于 ${finishedAt}：${verb}成功 ${success}，跳过 ${skipped}，失败 ${failed}`
+}
+
+function summarizeUpdateCounts(results: UpdateResult[], mode: UpdateMode) {
   const success = results.filter((result) => result.success).length
   const skipped = results.filter((result) => result.skipped).length
   const failed = results.length - success - skipped
   const verb = mode === 'pull' ? '拉取' : '获取'
-  return `${verb}完成：成功 ${success}，跳过 ${skipped}，失败 ${failed}`
+  return { success, skipped, failed, verb }
 }
 
 function messageOf(error: unknown) {
@@ -520,18 +604,18 @@ function messageOf(error: unknown) {
           深度
           <input v-model.number="settings.maxDepth" min="1" max="12" type="number" />
         </label>
-        <button class="primary-button" :disabled="state.scanning" @click="scanRepositories(true)">
+        <button class="primary-button" :disabled="state.scanning || state.updating" @click="scanRepositories(true)">
           <RefreshCw :size="17" :class="{ spin: state.scanning }" />
           扫描
         </button>
       </div>
 
       <div class="top-actions">
-        <button title="Fetch all" :disabled="state.updating || repositories.length === 0" @click="updateRepositories('fetch', 'all')">
+        <button title="Fetch all" :disabled="state.scanning || state.updating || repositories.length === 0" @click="updateRepositories('fetch', 'all')">
           <Download :size="17" />
           全部 Fetch
         </button>
-        <button title="Pull clean repositories" :disabled="state.updating || repositories.length === 0" @click="updateRepositories('pull', 'all')">
+        <button title="Pull clean repositories" :disabled="state.scanning || state.updating || repositories.length === 0" @click="updateRepositories('pull', 'all')">
           <GitPullRequest :size="17" />
           全部 Pull
         </button>
@@ -583,7 +667,10 @@ function messageOf(error: unknown) {
       <div class="scan-time">
         <Play v-if="settings.autoRefresh" :size="15" />
         <Pause v-else :size="15" />
-        {{ state.lastScan ? `上次扫描 ${formatDate(state.lastScan)}` : '未扫描' }}
+        <div class="scan-time-copy">
+          <span>{{ state.lastScan ? `上次扫描 ${formatDate(state.lastScan)}` : '未扫描' }}</span>
+          <span class="scan-time-note" :class="{ warn: state.autoCycleNote.includes('跳过') }">{{ state.autoCycleNote }}</span>
+        </div>
       </div>
     </section>
 
@@ -644,15 +731,15 @@ function messageOf(error: unknown) {
             <p>{{ selectedRepo.path }}</p>
           </div>
           <div class="repo-actions">
-            <button title="刷新仓库" :disabled="state.scanning" @click="refreshSelected">
+            <button title="刷新仓库" :disabled="state.scanning || state.updating" @click="refreshSelected">
               <RotateCw :size="17" :class="{ spin: state.scanning }" />
               刷新
             </button>
-            <button title="Fetch selected" :disabled="state.updating" @click="updateRepositories('fetch', 'selected')">
+            <button title="Fetch selected" :disabled="state.scanning || state.updating" @click="updateRepositories('fetch', 'selected')">
               <Download :size="17" />
               Fetch
             </button>
-            <button title="Pull selected" :disabled="state.updating" @click="updateRepositories('pull', 'selected')">
+            <button title="Pull selected" :disabled="state.scanning || state.updating" @click="updateRepositories('pull', 'selected')">
               <GitPullRequest :size="17" />
               Pull
             </button>
