@@ -1,6 +1,6 @@
 # Fusion Git Desk 每日演化提示词
 
-状态日期：2026-06-09
+状态日期：2026-06-10
 
 本文档用于驱动 Fusion Git Desk 的持续演化工作流：每天巡检仓库、发现需求、选择一个可落地的小目标、实现、验证，并把通过验证的调整发布到远程。
 
@@ -10,6 +10,7 @@
 - 自动化可以提出需求和实现改动，但不能跳过质量门禁。
 - Git 写操作必须显式、可追踪、可回滚。默认直接在 `main` 上本地提交；只有在全部验证通过后才允许推送 `main`。
 - 默认发布到远程的含义是把已验证提交直接推送到 `origin/main`；只有版本号、标签和 release 条件明确时才创建 `v*` 标签触发 GitHub Release。
+- 日常演化不创建 `codex/daily-evolution-*` 分支，也不创建日常 PR；如果外部自动化仍传入 `BRANCH` 或 `RELEASE_MODE=branch-pr`，按 `RELEASE_MODE=main-direct` 处理，并在报告里提示配置需要更新。
 - 保持项目约束：Go + Wails v2 后端，Vue 3 + TypeScript + Vite 前端，Git 操作通过系统 `git`，Windows 下 Git 子进程保持隐藏窗口启动。
 
 ## 变量
@@ -27,6 +28,8 @@ RELEASE_MODE=main-direct
 - `main-direct`：默认模式。直接在 `main` 上提交并推送到 `origin/main`，不创建日常功能分支或 PR。
 - `tag-release`：正式发布模式。所有验收通过后更新版本和 changelog，创建并推送 `v*` 标签。
 - `local-only`：只做本地改动和报告，不推送。
+
+不要为日常演化传入 `BRANCH`。历史遗留的 `BRANCH=codex/daily-evolution-YYYY-MM-DD` 或 `RELEASE_MODE=branch-pr` 都视为过期配置，执行时应改用 `main-direct`。
 
 ## 总控提示词
 
@@ -54,7 +57,8 @@ RELEASE_MODE=main-direct
    - main-direct：直接提交到本地 `main`，推送到 `origin/main`；如果远程凭据缺失，保留本地提交并清楚记录阻塞原因。
    - tag-release：确认版本号，更新必要版本记录，提交，推送 `main`，创建并推送 `v*` 标签。
    - local-only：只保留本地提交或改动报告，不推送。
-8. 最终输出：今日目标、改动摘要、验证结果、发布结果、后续建议。
+8. 如果提示或自动化配置里出现 `BRANCH=codex/daily-evolution-*` 或 `RELEASE_MODE=branch-pr`，不要创建分支或 PR；继续按 `main-direct` 执行，并把需要清理旧配置写入最终报告。
+9. 最终输出：今日目标、改动摘要、验证结果、发布结果、后续建议。
 ```
 
 ## 每日巡检提示词
@@ -158,6 +162,7 @@ RELEASE_MODE=main-direct
 - 提交信息使用：type(scope): summary。
 - 直接推送到 `origin/main`。
 - 不创建日常分支，不创建日常 PR。
+- 如果当前不在 `main`，先回到 `main` 并确认工作区干净；不要为了日常任务新建 `codex/daily-evolution-*` 分支。
 
 正式 release 流程只在明确要求 RELEASE_MODE=tag-release 时执行：
 - 确认新版本号。
@@ -191,6 +196,8 @@ RELEASE_MODE=main-direct
 本次使用：
 - DATE=今天日期
 - RELEASE_MODE=main-direct
+
+不要传入 `BRANCH`，不要创建 `codex/daily-evolution-*` 日常分支，也不要为日常演化创建 PR。
 
 请每天只完成一个小目标。优先从 docs/roadmap.md 和 docs/performance.md 中选择事项；如果发现更严重的构建、测试或发布问题，则优先修复。
 
