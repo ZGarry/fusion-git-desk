@@ -113,6 +113,10 @@ const repoStats = computed(() => {
 
 const selectedFiles = computed(() => selectedRepo.value?.status.files ?? [])
 const selectedFile = computed(() => selectedFiles.value.find((file) => file.path === selectedFilePath.value) ?? null)
+const selectedPullWarning = computed(() => {
+  if (!selectedRepo.value || selectedRepo.value.isClean || !settings.onlyPullCleanRepos) return ''
+  return '当前仓库有本地改动，Pull 会跳过；Fetch 仍可更新远端引用。'
+})
 const changedFileKeyword = computed(() => changedFileFilter.value.trim().toLowerCase())
 const filteredSelectedFiles = computed(() => {
   const keyword = changedFileKeyword.value
@@ -663,13 +667,15 @@ function clampNumber(value: number, min: number, max: number) {
 
 function summarizeUpdate(results: UpdateResult[], mode: UpdateMode) {
   const { success, skipped, failed, verb } = summarizeUpdateCounts(results, mode)
-  return `${verb}完成：成功 ${success}，跳过 ${skipped}，失败 ${failed}`
+  const detail = summarizeUpdateDetail(results, mode)
+  return `${verb}完成：成功 ${success}，跳过 ${skipped}，失败 ${failed}${detail ? `；${detail}` : ''}`
 }
 
 function summarizeAutoCycleUpdate(modeLabel: string, results: UpdateResult[], mode: UpdateMode, finishedAt: string) {
   const { success, skipped, failed, verb } = summarizeUpdateCounts(results, mode)
   const status = failed > 0 ? '结束' : '完成'
-  return `${modeLabel}${status}于 ${finishedAt}：${verb}成功 ${success}，跳过 ${skipped}，失败 ${failed}`
+  const detail = summarizeUpdateDetail(results, mode)
+  return `${modeLabel}${status}于 ${finishedAt}：${verb}成功 ${success}，跳过 ${skipped}，失败 ${failed}${detail ? `；${detail}` : ''}`
 }
 
 function summarizeAutoCycleFailure(results: UpdateResult[]) {
@@ -683,6 +689,32 @@ function summarizeUpdateCounts(results: UpdateResult[], mode: UpdateMode) {
   const failed = results.length - success - skipped
   const verb = mode === 'pull' ? '拉取' : '获取'
   return { success, skipped, failed, verb }
+}
+
+function summarizeUpdateDetail(results: UpdateResult[], mode: UpdateMode) {
+  const skipped = results.filter((result) => result.skipped)
+  const failed = results.filter((result) => !result.success && !result.skipped)
+  if (skipped.length && mode === 'pull') {
+    const dirtySkipped = skipped.filter((result) => isDirtyWorkingTreeSkip(result))
+    if (dirtySkipped.length === skipped.length) {
+      return skipped.length === 1
+        ? '工作区有本地改动，已跳过 Pull；可先 Fetch 更新远端引用'
+        : `${skipped.length} 个仓库有本地改动，已跳过 Pull；可先 Fetch 更新远端引用`
+    }
+    return firstUsefulMessage(skipped) || '部分仓库被跳过'
+  }
+  if (failed.length) {
+    return firstUsefulMessage(failed)
+  }
+  return ''
+}
+
+function isDirtyWorkingTreeSkip(result: UpdateResult) {
+  return result.message.toLowerCase().includes('working tree has local changes') || result.message.includes('本地改动')
+}
+
+function firstUsefulMessage(results: UpdateResult[]) {
+  return results.find((result) => result.message.trim())?.message.trim() ?? ''
 }
 
 function messageOf(error: unknown) {
@@ -839,17 +871,18 @@ function messageOf(error: unknown) {
           <div class="repo-title">
             <h2>{{ selectedRepo.name }}</h2>
             <p>{{ selectedRepo.path }}</p>
+            <p v-if="selectedPullWarning" class="repo-action-note">{{ selectedPullWarning }}</p>
           </div>
           <div class="repo-actions">
             <button title="刷新仓库" :disabled="state.scanning || state.updating" @click="refreshSelected">
               <RotateCw :size="17" :class="{ spin: state.scanning }" />
               刷新
             </button>
-            <button title="Fetch selected" :disabled="state.scanning || state.updating" @click="updateRepositories('fetch', 'selected')">
+            <button title="Fetch selected: 更新远端引用，不会合并到本地工作区" :disabled="state.scanning || state.updating" @click="updateRepositories('fetch', 'selected')">
               <Download :size="17" />
               Fetch
             </button>
-            <button title="Pull selected" :disabled="state.scanning || state.updating" @click="updateRepositories('pull', 'selected')">
+            <button :title="selectedPullWarning || 'Pull selected'" :disabled="state.scanning || state.updating" @click="updateRepositories('pull', 'selected')">
               <GitPullRequest :size="17" />
               Pull
             </button>

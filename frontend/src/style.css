@@ -443,6 +443,13 @@ input:focus {
   font-size: 18px;
 }
 
+.repo-title .repo-action-note {
+  color: #8b4f0f;
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+}
+
 .repo-actions {
   display: flex;
   align-items: center;

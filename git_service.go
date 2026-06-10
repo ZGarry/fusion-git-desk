@@ -545,7 +545,7 @@ func (g *GitService) updateRepository(path string, mode string, onlyClean bool, 
 	result.Before = &beforeCopy
 	if onlyClean && !before.IsClean {
 		result.Skipped = true
-		result.Message = "skipped because the working tree has local changes"
+		result.Message = "工作区有本地改动，已按仅干净仓库 Pull 策略跳过"
 		return result
 	}
 	stdout, stderr, err := g.runGit(before.Path, 4*g.commandTimeout, updateArgs(mode, prune)...)
