@@ -405,6 +405,11 @@ input:focus {
   background: #e5f0fa;
 }
 
+.pill.timing {
+  color: #3f5c68;
+  background: #e6f0f2;
+}
+
 .pill.ok {
   color: #24604b;
   background: #e2f2e8;

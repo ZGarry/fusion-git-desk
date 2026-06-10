@@ -45,21 +45,22 @@ type ScanResponse struct {
 }
 
 type Repository struct {
-	ID          string     `json:"id"`
-	Name        string     `json:"name"`
-	Path        string     `json:"path"`
-	Branch      string     `json:"branch"`
-	Head        string     `json:"head"`
-	Upstream    string     `json:"upstream"`
-	RemoteURL   string     `json:"remoteUrl"`
-	HasUpstream bool       `json:"hasUpstream"`
-	IsClean     bool       `json:"isClean"`
-	Ahead       int        `json:"ahead"`
-	Behind      int        `json:"behind"`
-	Status      RepoStatus `json:"status"`
-	LastCommit  CommitInfo `json:"lastCommit"`
-	InspectedAt string     `json:"inspectedAt"`
-	Error       string     `json:"error,omitempty"`
+	ID          string      `json:"id"`
+	Name        string      `json:"name"`
+	Path        string      `json:"path"`
+	Branch      string      `json:"branch"`
+	Head        string      `json:"head"`
+	Upstream    string      `json:"upstream"`
+	RemoteURL   string      `json:"remoteUrl"`
+	HasUpstream bool        `json:"hasUpstream"`
+	IsClean     bool        `json:"isClean"`
+	Ahead       int         `json:"ahead"`
+	Behind      int         `json:"behind"`
+	Status      RepoStatus  `json:"status"`
+	LastCommit  CommitInfo  `json:"lastCommit"`
+	Timings     RepoTimings `json:"timings"`
+	InspectedAt string      `json:"inspectedAt"`
+	Error       string      `json:"error,omitempty"`
 }
 
 type RepoStatus struct {
@@ -88,6 +89,14 @@ type CommitInfo struct {
 	Author       string `json:"author"`
 	RelativeTime string `json:"relativeTime"`
 	Subject      string `json:"subject"`
+}
+
+type RepoTimings struct {
+	RevParseMs   int64 `json:"revParseMs"`
+	StatusMs     int64 `json:"statusMs"`
+	RemoteMs     int64 `json:"remoteMs"`
+	LastCommitMs int64 `json:"lastCommitMs"`
+	TotalMs      int64 `json:"totalMs"`
 }
 
 type BranchResponse struct {
@@ -277,13 +286,17 @@ func (g *GitService) Inspect(path string) (Repository, error) {
 	if !g.HasGit() {
 		return Repository{}, errors.New("git executable was not found in PATH")
 	}
+	inspectStarted := time.Now()
+	timings := RepoTimings{}
 	path, err := filepath.Abs(path)
 	if err != nil {
 		return Repository{}, err
 	}
-	revParse, stderr, err := g.runGit(path, g.commandTimeout, "rev-parse", "--show-toplevel", "--short", "HEAD")
+	revParse, stderr, err, revParseElapsed := g.runTimedGit(path, g.commandTimeout, "rev-parse", "--show-toplevel", "--short", "HEAD")
+	timings.RevParseMs += revParseElapsed
 	if err != nil {
-		topLevel, topLevelStderr, topLevelErr := g.runGit(path, g.commandTimeout, "rev-parse", "--show-toplevel")
+		topLevel, topLevelStderr, topLevelErr, topLevelElapsed := g.runTimedGit(path, g.commandTimeout, "rev-parse", "--show-toplevel")
+		timings.RevParseMs += topLevelElapsed
 		if topLevelErr != nil {
 			return Repository{}, fmt.Errorf("not a git repository: %s", firstNonEmpty(topLevelStderr, stderr, err.Error()))
 		}
@@ -299,7 +312,8 @@ func (g *GitService) Inspect(path string) (Repository, error) {
 		head = strings.TrimSpace(revParseLines[1])
 	}
 
-	statusOutput, stderr, err := g.runGit(path, g.commandTimeout, "status", "--porcelain=v1", statusUntrackedMode, "-b", "--ahead-behind")
+	statusOutput, stderr, err, statusElapsed := g.runTimedGit(path, g.commandTimeout, "status", "--porcelain=v1", statusUntrackedMode, "-b", "--ahead-behind")
+	timings.StatusMs = statusElapsed
 	if err != nil {
 		return Repository{}, fmt.Errorf("git status failed: %s", firstNonEmpty(stderr, err.Error()))
 	}
@@ -307,7 +321,11 @@ func (g *GitService) Inspect(path string) (Repository, error) {
 	if branch == "" {
 		branch = "HEAD detached"
 	}
-	remoteURL, _, _ := g.runGit(path, g.commandTimeout, "remote", "get-url", "origin")
+	remoteURL, _, _, remoteElapsed := g.runTimedGit(path, g.commandTimeout, "remote", "get-url", "origin")
+	timings.RemoteMs = remoteElapsed
+	lastCommit, lastCommitElapsed := g.lastCommitTimed(path)
+	timings.LastCommitMs = lastCommitElapsed
+	timings.TotalMs = elapsedMillis(inspectStarted)
 
 	return Repository{
 		ID:          repoID(path),
@@ -322,7 +340,8 @@ func (g *GitService) Inspect(path string) (Repository, error) {
 		Ahead:       ahead,
 		Behind:      behind,
 		Status:      status,
-		LastCommit:  g.lastCommit(path),
+		LastCommit:  lastCommit,
+		Timings:     timings,
 		InspectedAt: nowISO(),
 	}, nil
 }
@@ -548,15 +567,28 @@ func (g *GitService) updateRepository(path string, mode string, onlyClean bool, 
 }
 
 func (g *GitService) lastCommit(path string) CommitInfo {
+	commit, _ := g.lastCommitTimed(path)
+	return commit
+}
+
+func (g *GitService) lastCommitTimed(path string) (CommitInfo, int64) {
+	started := time.Now()
 	output, _, err := g.runGit(path, g.commandTimeout, "log", "-1", "--pretty=format:%h%x00%an%x00%cr%x00%s")
+	elapsed := elapsedMillis(started)
 	if err != nil || output == "" {
-		return CommitInfo{}
+		return CommitInfo{}, elapsed
 	}
 	parts := strings.SplitN(output, "\x00", 4)
 	for len(parts) < 4 {
 		parts = append(parts, "")
 	}
-	return CommitInfo{Hash: parts[0], Author: parts[1], RelativeTime: parts[2], Subject: parts[3]}
+	return CommitInfo{Hash: parts[0], Author: parts[1], RelativeTime: parts[2], Subject: parts[3]}, elapsed
+}
+
+func (g *GitService) runTimedGit(repo string, timeout time.Duration, args ...string) (string, string, error, int64) {
+	started := time.Now()
+	stdout, stderr, err := g.runGit(repo, timeout, args...)
+	return stdout, stderr, err, elapsedMillis(started)
 }
 
 func (g *GitService) runGit(repo string, timeout time.Duration, args ...string) (string, string, error) {
@@ -1074,4 +1106,19 @@ func boundedWorkerCount(items int, maxWorkers int) int {
 
 func nowISO() string {
 	return time.Now().Format(time.RFC3339)
+}
+
+func elapsedMillis(started time.Time) int64 {
+	return durationMillis(time.Since(started))
+}
+
+func durationMillis(duration time.Duration) int64 {
+	if duration <= 0 {
+		return 0
+	}
+	milliseconds := duration.Milliseconds()
+	if milliseconds == 0 {
+		return 1
+	}
+	return milliseconds
 }

@@ -532,6 +532,27 @@ function changedCount(repo: Repository) {
   return repo.status.files.length
 }
 
+function formatDurationMs(value?: number) {
+  const milliseconds = Number(value ?? 0)
+  if (!Number.isFinite(milliseconds) || milliseconds <= 0) return '0ms'
+  if (milliseconds >= 1000) {
+    const seconds = milliseconds / 1000
+    return `${seconds >= 10 ? seconds.toFixed(0) : seconds.toFixed(1)}s`
+  }
+  return `${Math.round(milliseconds)}ms`
+}
+
+function scanTimingTitle(repo: Repository) {
+  const timings = repo.timings
+  if (!timings) return ''
+  return [
+    `rev-parse ${formatDurationMs(timings.revParseMs)}`,
+    `status ${formatDurationMs(timings.statusMs)}`,
+    `remote ${formatDurationMs(timings.remoteMs)}`,
+    `log ${formatDurationMs(timings.lastCommitMs)}`,
+  ].join(' | ')
+}
+
 function guardBusyAction(action: string, showNotice = true) {
   let reason = ''
   if (state.scanning) {
@@ -799,6 +820,7 @@ function messageOf(error: unknown) {
             </div>
             <div class="repo-row-meta">
               <span class="branch-chip"><GitBranch :size="13" /> {{ repo.branch }}</span>
+              <span v-if="repo.timings?.totalMs" class="pill timing" :title="scanTimingTitle(repo)">Scan {{ formatDurationMs(repo.timings?.totalMs) }}</span>
               <span v-if="repo.ahead" class="pill">领先 {{ repo.ahead }}</span>
               <span v-if="repo.behind" class="pill info">落后 {{ repo.behind }}</span>
               <span v-if="changedCount(repo)" class="pill warn">{{ changedCount(repo) }} 改动</span>
@@ -837,6 +859,7 @@ function messageOf(error: unknown) {
         <div v-if="selectedRepo" class="repo-summary">
           <span><GitBranch :size="15" /> {{ selectedRepo.branch }}</span>
           <span>{{ selectedRepo.head }}</span>
+          <span v-if="selectedRepo.timings?.totalMs" :title="scanTimingTitle(selectedRepo)">Scan {{ formatDurationMs(selectedRepo.timings?.totalMs) }}</span>
           <span v-if="selectedRepo.upstream">{{ selectedRepo.upstream }}</span>
           <span v-if="selectedRepo.lastCommit.hash">{{ selectedRepo.lastCommit.hash }} {{ selectedRepo.lastCommit.subject }}</span>
         </div>

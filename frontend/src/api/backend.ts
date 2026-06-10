@@ -53,6 +53,13 @@ const demoRepo: Repository = {
     relativeTime: 'just now',
     subject: 'Create repository dashboard',
   },
+  timings: {
+    revParseMs: 4,
+    statusMs: 18,
+    remoteMs: 6,
+    lastCommitMs: 9,
+    totalMs: 42,
+  },
   status: {
     added: 1,
     modified: 2,

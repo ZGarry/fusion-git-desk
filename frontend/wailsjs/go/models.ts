@@ -333,6 +333,26 @@ export namespace main {
 		    return a;
 		}
 	}
+	export class RepoTimings {
+	    revParseMs: number;
+	    statusMs: number;
+	    remoteMs: number;
+	    lastCommitMs: number;
+	    totalMs: number;
+
+	    static createFrom(source: any = {}) {
+	        return new RepoTimings(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.revParseMs = source["revParseMs"];
+	        this.statusMs = source["statusMs"];
+	        this.remoteMs = source["remoteMs"];
+	        this.lastCommitMs = source["lastCommitMs"];
+	        this.totalMs = source["totalMs"];
+	    }
+	}
 	export class Repository {
 	    id: string;
 	    name: string;
@@ -347,6 +367,7 @@ export namespace main {
 	    behind: number;
 	    status: RepoStatus;
 	    lastCommit: CommitInfo;
+	    timings: RepoTimings;
 	    inspectedAt: string;
 	    error?: string;
 	
@@ -369,6 +390,7 @@ export namespace main {
 	        this.behind = source["behind"];
 	        this.status = this.convertValues(source["status"], RepoStatus);
 	        this.lastCommit = this.convertValues(source["lastCommit"], CommitInfo);
+	        this.timings = this.convertValues(source["timings"], RepoTimings);
 	        this.inspectedAt = source["inspectedAt"];
 	        this.error = source["error"];
 	    }
@@ -498,4 +520,3 @@ export namespace main {
 	}
 
 }
-

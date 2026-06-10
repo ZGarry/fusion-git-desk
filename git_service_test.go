@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestParseStatusKeepsNestedUntrackedFiles(t *testing.T) {
@@ -139,5 +140,17 @@ func TestParseDiffGitLineKeepsSpaces(t *testing.T) {
 	}
 	if newPath != "folder/new name.txt" {
 		t.Fatalf("unexpected new path: %q", newPath)
+	}
+}
+
+func TestDurationMillisRoundsPositiveSubmillisecond(t *testing.T) {
+	if got := durationMillis(500 * time.Microsecond); got != 1 {
+		t.Fatalf("expected submillisecond duration to round to 1ms, got %d", got)
+	}
+	if got := durationMillis(1500 * time.Millisecond); got != 1500 {
+		t.Fatalf("expected millisecond duration to be preserved, got %d", got)
+	}
+	if got := durationMillis(0); got != 0 {
+		t.Fatalf("expected zero duration to stay zero, got %d", got)
 	}
 }

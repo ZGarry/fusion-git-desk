@@ -36,6 +36,7 @@ export interface Repository {
   behind: number
   status: RepoStatus
   lastCommit: CommitInfo
+  timings?: RepoTimings
   inspectedAt: string
   error?: string
 }
@@ -66,6 +67,14 @@ export interface CommitInfo {
   author: string
   relativeTime: string
   subject: string
+}
+
+export interface RepoTimings {
+  revParseMs: number
+  statusMs: number
+  remoteMs: number
+  lastCommitMs: number
+  totalMs: number
 }
 
 export interface BranchResponse {
