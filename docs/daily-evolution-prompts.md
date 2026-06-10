@@ -192,27 +192,37 @@ RELEASE_MODE=main-direct
 6. 如果需要回滚，只给出候选命令，不要自动执行 destructive 命令，除非用户明确授权。
 ```
 
-## 推荐每日目标任务提示词
+## 推荐每小时执行提示词
 
 ```text
-进入 E:\my\fusion-git-desk，使用 docs/daily-evolution-prompts.md 中的“总控提示词”执行一次每日演化。
+进入 E:\my\fusion-git-desk，阅读 AGENTS.md、README.md、WORKDOC.md、docs/requirements.md、docs/roadmap.md、docs/performance.md 和 docs/daily-evolution-prompts.md。
 
-此提示词用于目标模式：目标完成前持续推进同一个目标，不按小时循环创建新的日常任务。
+按照 docs/daily-evolution-prompts.md 中的“总控提示词”执行一次持续演化检查。此提示词用于每小时自动触发，但目标按天收敛：每天最多主动完成一个小而完整的演化目标；如果当天已有未完成目标，则继续推进同一个目标；如果当天已有完成并推送的目标，且没有更严重的构建、测试、发布或 P0/P1 问题，则只做简短巡检报告，不要为了每小时触发而制造新改动。
 
 本次使用：
 - DATE=今天日期
 - RELEASE_MODE=main-direct
 
-不要传入 `BRANCH`，不要创建 `codex/daily-evolution-*` 日常分支，也不要为日常演化创建 PR。
+不要传入 `BRANCH`，不要创建 `codex/daily-evolution-*` 日常分支，不要使用 Codex worktree，也不要为日常演化创建 PR。所有实现都在当前本地 `main` 上完成；验证通过后提交到 `main`，推送 `origin/main`，由 GitHub Actions 触发远程 macOS 打包 workflow。不要在未明确 `tag-release` 模式时创建 `v*` 标签。
 
-请每天只完成一个小目标。优先从 docs/roadmap.md 和 docs/performance.md 中选择事项；如果发现更严重的构建、测试或发布问题，则优先修复。
+执行要求：
+1. 先检查 `git status --short --branch`、最近提交、WORKDOC.md 今日记录和 GitHub Actions/发布状态。
+2. 优先从 docs/roadmap.md 和 docs/performance.md 中选择事项；如果发现更严重的构建、测试或发布问题，则优先修复。
+3. 实现前给出简短计划；修改时遵循现有代码风格，避免无关重构。
+4. 修改后更新 WORKDOC.md，按日期追加本轮简短记录。
+5. 修改后运行可用质量门禁，至少尝试：
+   - cd frontend && pnpm build
+   - go test ./...
+6. 如果涉及桌面打包或发布链路，额外尝试 `wails build`；如果当前平台无法生成目标平台产物，说明限制和替代产物。
+7. 验证通过后提交并推送 `origin/main`；推送后检查 GitHub Actions 的 macOS package workflow 是否启动或完成。
+8. 如果缺少工具、凭据、网络或远程 API 受限，记录阻塞原因，并尽可能完成本地可验证部分。
 
 完成后必须输出：
 - 今日选择的目标和原因
 - 实现摘要
 - 运行过的验证命令和结果
 - WORKDOC.md 是否已更新
-- 是否已提交、是否已推送 `origin/main`
+- 是否已提交、是否已推送 `origin/main`、远程 workflow 状态
 - 下一次建议处理的事项
 ```
 
