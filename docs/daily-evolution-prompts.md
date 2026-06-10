@@ -8,9 +8,9 @@
 
 - 每次只选择一个小而完整的目标，优先修复用户可感知的问题、性能瓶颈和发布链路缺口。
 - 自动化可以提出需求和实现改动，但不能跳过质量门禁。
-- Git 写操作必须显式、可追踪、可回滚。默认直接在 `main` 上本地提交；只有在全部验证通过后才允许推送 `main`。
-- 默认发布到远程的含义是把已验证提交直接推送到 `origin/main`；只有版本号、标签和 release 条件明确时才创建 `v*` 标签触发 GitHub Release。
-- 日常演化不创建 `codex/daily-evolution-*` 分支，也不创建日常 PR；如果外部自动化仍传入 `BRANCH` 或 `RELEASE_MODE=branch-pr`，按 `RELEASE_MODE=main-direct` 处理，并在报告里提示配置需要更新。
+- Git 写操作必须显式、可追踪、可回滚。日常演化默认从 `main` 出发，在 `BRANCH=codex/daily-evolution-DATE` 上提交并推送远程分支。
+- 默认发布到远程的含义是把已验证提交推送到日常演化分支，并在可用时创建 PR；不要直接推送 `main`。
+- 只有版本号、标签和 release 条件明确，且 `RELEASE_MODE=tag-release` 时，才创建 `v*` 标签触发 GitHub Release。
 - 保持项目约束：Go + Wails v2 后端，Vue 3 + TypeScript + Vite 前端，Git 操作通过系统 `git`，Windows 下 Git 子进程保持隐藏窗口启动。
 
 ## 变量
@@ -20,16 +20,18 @@
 ```text
 REPO_PATH=E:\my\fusion-git-desk
 DATE=YYYY-MM-DD
-RELEASE_MODE=main-direct
+BRANCH=codex/daily-evolution-YYYY-MM-DD
+RELEASE_MODE=branch-pr
 ```
 
 `RELEASE_MODE` 建议取值：
 
-- `main-direct`：默认模式。直接在 `main` 上提交并推送到 `origin/main`，不创建日常功能分支或 PR。
+- `branch-pr`：默认模式。从 `main` 出发提交到 `BRANCH`，推送远程分支，并在 gh CLI 可用且已登录时创建 PR。
+- `main-direct`：维护者手动要求时使用。直接在 `main` 上提交并推送到 `origin/main`。
 - `tag-release`：正式发布模式。所有验收通过后更新版本和 changelog，创建并推送 `v*` 标签。
 - `local-only`：只做本地改动和报告，不推送。
 
-不要为日常演化传入 `BRANCH`。历史遗留的 `BRANCH=codex/daily-evolution-YYYY-MM-DD` 或 `RELEASE_MODE=branch-pr` 都视为过期配置，执行时应改用 `main-direct`。
+日常演化应传入 `BRANCH=codex/daily-evolution-DATE` 和 `RELEASE_MODE=branch-pr`。不要在未明确 `tag-release` 模式时创建 `v*` 标签。
 
 ## 总控提示词
 
@@ -47,18 +49,19 @@ RELEASE_MODE=main-direct
 工作要求：
 1. 先读取 AGENTS.md、README.md、docs/requirements.md、docs/roadmap.md、docs/performance.md 和当前 git 状态。
 2. 从产品价值、性能、可靠性、测试覆盖和发布链路中选择一个最值得今天处理的目标。
-3. 目标必须足够小，可以在 `main` 上完成、验证、提交并推送。
+3. 目标必须足够小，可以基于 `main` 完成、验证、提交到日常演化分支并推送。
 4. 实现前写出简短计划；实现时遵循现有代码风格；避免无关重构。
 5. 修改后运行可用的质量门禁，至少包括：
    - cd frontend && pnpm build
    - go test ./...
 6. 如果本机缺少 Go、Node、pnpm、Wails 或远程凭据，记录阻塞原因，并尽可能完成可验证的部分。
 7. 通过验证后按 RELEASE_MODE 发布：
-   - main-direct：直接提交到本地 `main`，推送到 `origin/main`；如果远程凭据缺失，保留本地提交并清楚记录阻塞原因。
+   - branch-pr：提交到本地 `BRANCH` 或从当前 `main` HEAD 推送到 `origin/BRANCH`；如果 gh CLI 可用且已登录则创建 PR；如果远程凭据缺失，保留本地提交并清楚记录阻塞原因。
+   - main-direct：仅在明确要求时直接提交到本地 `main`，推送到 `origin/main`。
    - tag-release：确认版本号，更新必要版本记录，提交，推送 `main`，创建并推送 `v*` 标签。
    - local-only：只保留本地提交或改动报告，不推送。
-8. 如果提示或自动化配置里出现 `BRANCH=codex/daily-evolution-*` 或 `RELEASE_MODE=branch-pr`，不要创建分支或 PR；继续按 `main-direct` 执行，并把需要清理旧配置写入最终报告。
-9. 最终输出：今日目标、改动摘要、验证结果、发布结果、后续建议。
+8. 不要直接推送 `main`，不要在未明确 `tag-release` 模式时创建 `v*` 标签。
+9. 最终输出：今日目标、改动摘要、验证结果、提交/推送/PR 结果、后续建议。
 ```
 
 ## 每日巡检提示词
@@ -160,9 +163,10 @@ RELEASE_MODE=main-direct
 默认发布流程：
 - 确认当前位于 `main`。
 - 提交信息使用：type(scope): summary。
-- 直接推送到 `origin/main`。
-- 不创建日常分支，不创建日常 PR。
-- 如果当前不在 `main`，先回到 `main` 并确认工作区干净；不要为了日常任务新建 `codex/daily-evolution-*` 分支。
+- 使用 `BRANCH=codex/daily-evolution-DATE`。
+- 推送到 `origin/BRANCH`。
+- 如果 gh CLI 可用且已登录，创建从 `BRANCH` 到 `main` 的 PR。
+- 不直接推送 `main`。
 
 正式 release 流程只在明确要求 RELEASE_MODE=tag-release 时执行：
 - 确认新版本号。
@@ -188,16 +192,17 @@ RELEASE_MODE=main-direct
 6. 如果需要回滚，只给出候选命令，不要自动执行 destructive 命令，除非用户明确授权。
 ```
 
-## 推荐每日自动任务提示词
+## 推荐每日定时任务提示词
 
 ```text
 进入 E:\my\fusion-git-desk，使用 docs/daily-evolution-prompts.md 中的“总控提示词”执行一次每日演化。
 
 本次使用：
 - DATE=今天日期
-- RELEASE_MODE=main-direct
+- BRANCH=codex/daily-evolution-今天日期
+- RELEASE_MODE=branch-pr
 
-不要传入 `BRANCH`，不要创建 `codex/daily-evolution-*` 日常分支，也不要为日常演化创建 PR。
+不要直接推送 `main`，不要在未明确 `tag-release` 模式时创建 `v*` 标签。
 
 请每天只完成一个小目标。优先从 docs/roadmap.md 和 docs/performance.md 中选择事项；如果发现更严重的构建、测试或发布问题，则优先修复。
 
@@ -205,13 +210,13 @@ RELEASE_MODE=main-direct
 - 今日选择的目标和原因
 - 实现摘要
 - 运行过的验证命令和结果
-- 是否已提交、是否已推送 `origin/main`
+- 是否已提交、是否已推送远程分支、是否已创建 PR
 - 下一次建议处理的事项
 ```
 
 ## 建议节奏
 
-- 每日：巡检 + 一个小改进 + 主干提交。
+- 每日：巡检 + 一个小改进 + 远程分支 PR。
 - 每周：整理 roadmap，关闭过期需求，挑一个 P1 产品能力。
 - 每个正式版本：只在所有门禁通过后推送 `v*` 标签，让 GitHub Actions 生成 macOS Release artifact。
 - 每月：做一次性能审计，重点看扫描耗时、diff 渲染和后台任务拥堵。

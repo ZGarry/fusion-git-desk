@@ -58,6 +58,7 @@ const state = reactive({
 
 const rootInput = ref('')
 const repoFilter = ref('')
+const changedFileFilter = ref('')
 const repositories = ref<Repository[]>([])
 const selectedPath = ref('')
 const selectedFilePath = ref('')
@@ -110,8 +111,15 @@ const repoStats = computed(() => {
 
 const selectedFiles = computed(() => selectedRepo.value?.status.files ?? [])
 const selectedFile = computed(() => selectedFiles.value.find((file) => file.path === selectedFilePath.value) ?? null)
-const renderedSelectedFiles = computed(() => selectedFiles.value.slice(0, maxRenderedChangedFiles))
-const hiddenSelectedFileCount = computed(() => Math.max(0, selectedFiles.value.length - renderedSelectedFiles.value.length))
+const changedFileKeyword = computed(() => changedFileFilter.value.trim().toLowerCase())
+const filteredSelectedFiles = computed(() => {
+  const keyword = changedFileKeyword.value
+  if (!keyword) return selectedFiles.value
+  return selectedFiles.value.filter((file) => `${file.status} ${file.path} ${file.oldPath ?? ''}`.toLowerCase().includes(keyword))
+})
+const renderedSelectedFiles = computed(() => filteredSelectedFiles.value.slice(0, maxRenderedChangedFiles))
+const hiddenSelectedFileCount = computed(() => Math.max(0, filteredSelectedFiles.value.length - renderedSelectedFiles.value.length))
+const hiddenByFileFilterCount = computed(() => Math.max(0, selectedFiles.value.length - filteredSelectedFiles.value.length))
 const localBranches = computed(() => (branches.value?.branches ?? []).filter((branch) => !branch.remote))
 const remoteBranches = computed(() => (branches.value?.branches ?? []).filter((branch) => branch.remote))
 const renderedDiff = computed(() => buildRenderedDiff(diff.value))
@@ -155,6 +163,7 @@ onBeforeUnmount(() => {
 
 watch(selectedPath, () => {
   selectedFilePath.value = ''
+  changedFileFilter.value = ''
   void loadSelectedDetails()
 })
 
@@ -910,23 +919,36 @@ function messageOf(error: unknown) {
         <section class="side-section files-section">
           <div class="side-head">
             <h2>变更文件</h2>
-            <span>{{ selectedFiles.length }}</span>
+            <span>
+              {{ filteredSelectedFiles.length }}
+              <template v-if="changedFileKeyword">/ {{ selectedFiles.length }}</template>
+            </span>
           </div>
 
           <div v-if="!selectedFiles.length" class="empty compact">无变更</div>
-          <div v-else class="file-list">
-            <button
-              v-for="file in renderedSelectedFiles"
-              :key="`${file.status}-${file.path}`"
-              class="file-row"
-              :class="{ active: file.path === selectedFilePath }"
-              @click="selectChangedFile(file)"
-            >
-              <span class="file-status" :class="{ staged: file.staged }">{{ file.status }}</span>
-              <span class="file-name">{{ file.path }}</span>
-            </button>
-            <div v-if="hiddenSelectedFileCount" class="list-limit-note">
-              还有 {{ hiddenSelectedFileCount }} 个变更文件未渲染。
+          <div v-else>
+            <div class="filter file-filter">
+              <Search :size="15" />
+              <input v-model="changedFileFilter" type="search" placeholder="过滤文件" />
+            </div>
+            <div v-if="!filteredSelectedFiles.length" class="empty compact">无匹配文件</div>
+            <div v-else class="file-list">
+              <button
+                v-for="file in renderedSelectedFiles"
+                :key="`${file.status}-${file.path}`"
+                class="file-row"
+                :class="{ active: file.path === selectedFilePath }"
+                @click="selectChangedFile(file)"
+              >
+                <span class="file-status" :class="{ staged: file.staged }">{{ file.status }}</span>
+                <span class="file-name">{{ file.path }}</span>
+              </button>
+              <div v-if="hiddenByFileFilterCount" class="list-limit-note">
+                已过滤 {{ hiddenByFileFilterCount }} 个变更文件。
+              </div>
+              <div v-if="hiddenSelectedFileCount" class="list-limit-note">
+                还有 {{ hiddenSelectedFileCount }} 个匹配文件未渲染。
+              </div>
             </div>
           </div>
         </section>

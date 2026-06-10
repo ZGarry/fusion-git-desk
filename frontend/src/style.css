@@ -319,6 +319,11 @@ input:focus {
   min-height: 30px;
 }
 
+.file-filter {
+  width: auto;
+  margin: 8px 8px 0;
+}
+
 .repo-list {
   min-height: 0;
   overflow: auto;
