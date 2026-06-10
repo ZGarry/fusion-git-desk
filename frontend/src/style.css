@@ -72,7 +72,7 @@ input:focus {
 .app-shell {
   height: 100%;
   display: grid;
-  grid-template-rows: 64px 44px auto 1fr;
+  grid-template-rows: 64px 44px auto minmax(0, 1fr);
   background: #f7f8f5;
 }
 
@@ -169,7 +169,7 @@ input:focus {
 .control-strip {
   min-width: 0;
   display: grid;
-  grid-template-columns: repeat(4, minmax(76px, auto)) 1fr auto;
+  grid-template-columns: repeat(7, minmax(64px, auto)) minmax(260px, 1fr) auto;
   align-items: center;
   gap: 10px;
   padding: 6px 16px;
@@ -194,6 +194,10 @@ input:focus {
 
 .metric.warn span {
   color: #9b5b11;
+}
+
+.metric.danger span {
+  color: #9b3532;
 }
 
 .metric.info span {
@@ -267,6 +271,7 @@ input:focus {
 }
 
 .workspace {
+  grid-row: 4;
   min-height: 0;
   display: grid;
   grid-template-columns: 324px minmax(480px, 1fr) 330px;
@@ -353,6 +358,10 @@ input:focus {
   border-left: 4px solid #c77a24;
 }
 
+.repo-row.conflicted {
+  border-left: 4px solid #b3403c;
+}
+
 .repo-row-main {
   min-width: 0;
 }
@@ -398,6 +407,11 @@ input:focus {
 .pill.warn {
   color: #8b4f0f;
   background: #fbefd8;
+}
+
+.pill.danger {
+  color: #9b3532;
+  background: #fae3df;
 }
 
 .pill.info {
@@ -479,6 +493,16 @@ input:focus {
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
+}
+
+.repo-summary span.summary-warn {
+  color: #8b4f0f;
+  background: #fbefd8;
+}
+
+.repo-summary span.summary-danger {
+  color: #9b3532;
+  background: #fae3df;
 }
 
 .diff-tabs {
@@ -651,8 +675,53 @@ input:focus {
 .branch-group,
 .remote-list,
 .file-list,
-.update-list {
+.update-list,
+.advisory-list {
   padding: 8px;
+}
+
+.advisory-row {
+  min-height: 54px;
+  display: grid;
+  gap: 3px;
+  margin-bottom: 7px;
+  padding: 8px 9px;
+  border-left: 3px solid #cbd6ce;
+  border-bottom: 1px solid #edf0ed;
+  background: #ffffff;
+}
+
+.advisory-row strong {
+  min-width: 0;
+  color: #24312c;
+  font-size: 13px;
+}
+
+.advisory-row small {
+  min-width: 0;
+  color: #65736d;
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.advisory-row.danger {
+  border-left-color: #b3403c;
+  background: #fff7f5;
+}
+
+.advisory-row.warn {
+  border-left-color: #c77a24;
+  background: #fffaf0;
+}
+
+.advisory-row.info {
+  border-left-color: #3c78a8;
+  background: #f4f9fd;
+}
+
+.advisory-row.ok {
+  border-left-color: #32684f;
+  background: #f3faf5;
 }
 
 .branch-row {

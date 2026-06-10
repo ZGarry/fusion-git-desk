@@ -543,6 +543,16 @@ func (g *GitService) updateRepository(path string, mode string, onlyClean bool, 
 	result.Path = before.Path
 	beforeCopy := before
 	result.Before = &beforeCopy
+	if mode == "pull" && before.Status.Conflicted > 0 {
+		result.Skipped = true
+		result.Message = "工作区存在冲突，已跳过 Pull；请先解决冲突并刷新仓库"
+		return result
+	}
+	if mode == "pull" && !before.HasUpstream {
+		result.Skipped = true
+		result.Message = "当前分支没有 upstream，已跳过 Pull；请先设置跟踪分支或从远端分支创建本地分支"
+		return result
+	}
 	if onlyClean && !before.IsClean {
 		result.Skipped = true
 		result.Message = "工作区有本地改动，已按仅干净仓库 Pull 策略跳过"

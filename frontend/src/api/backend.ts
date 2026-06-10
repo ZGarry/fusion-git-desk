@@ -183,11 +183,15 @@ export const api = {
       return request.paths.map((path) => ({
         path,
         mode: request.mode,
-        skipped: false,
-        success: true,
-        message: request.mode === 'pull' ? 'Already up to date.' : 'Fetched demo remotes.',
+        skipped: request.mode === 'pull' && request.onlyClean && !demoRepo.isClean,
+        success: !(request.mode === 'pull' && request.onlyClean && !demoRepo.isClean),
+        message: request.mode === 'pull' && request.onlyClean && !demoRepo.isClean
+          ? '工作区有本地改动，已按仅干净仓库 Pull 策略跳过'
+          : request.mode === 'pull' ? 'Already up to date.' : 'Fetched demo remotes.',
         stdout: '',
         stderr: '',
+        before: demoRepo,
+        after: demoRepo,
         finishedAt: new Date().toISOString(),
       }))
     }

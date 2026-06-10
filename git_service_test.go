@@ -2,7 +2,9 @@ package main
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -153,4 +155,88 @@ func TestDurationMillisRoundsPositiveSubmillisecond(t *testing.T) {
 	if got := durationMillis(0); got != 0 {
 		t.Fatalf("expected zero duration to stay zero, got %d", got)
 	}
+}
+
+func TestPullSkipsRepositoryWithoutUpstream(t *testing.T) {
+	root := initTestRepo(t)
+	commitTestFile(t, root, "README.md", "hello\n", "initial commit")
+
+	result := NewGitService().updateRepository(root, "pull", false, false)
+
+	if !result.Skipped {
+		t.Fatalf("expected pull without upstream to be skipped, got %#v", result)
+	}
+	if result.Success {
+		t.Fatalf("skipped pull should not be marked successful: %#v", result)
+	}
+	if !strings.Contains(result.Message, "upstream") {
+		t.Fatalf("expected upstream guidance in message, got %q", result.Message)
+	}
+}
+
+func TestPullSkipsRepositoryWithConflicts(t *testing.T) {
+	root := initTestRepo(t)
+	commitTestFile(t, root, "README.md", "base\n", "initial commit")
+	runTestGit(t, root, "checkout", "-b", "feature")
+	commitTestFile(t, root, "README.md", "feature\n", "feature change")
+	runTestGit(t, root, "checkout", "main")
+	commitTestFile(t, root, "README.md", "main\n", "main change")
+	runTestGitExpectError(t, root, "merge", "feature")
+
+	result := NewGitService().updateRepository(root, "pull", false, false)
+
+	if !result.Skipped {
+		t.Fatalf("expected conflicted pull to be skipped, got %#v", result)
+	}
+	if result.Before == nil || result.Before.Status.Conflicted == 0 {
+		t.Fatalf("expected conflicted status before pull, got %#v", result.Before)
+	}
+	if !strings.Contains(result.Message, "冲突") {
+		t.Fatalf("expected conflict guidance in message, got %q", result.Message)
+	}
+}
+
+func initTestRepo(t *testing.T) string {
+	t.Helper()
+	root := t.TempDir()
+	runTestGit(t, root, "init", "-b", "main")
+	runTestGit(t, root, "config", "user.name", "Fusion Git Desk Test")
+	runTestGit(t, root, "config", "user.email", "fusion-git-desk-test@example.invalid")
+	return root
+}
+
+func commitTestFile(t *testing.T, root string, name string, content string, message string) {
+	t.Helper()
+	path := filepath.Join(root, name)
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runTestGit(t, root, "add", name)
+	runTestGit(t, root, "commit", "-m", message)
+}
+
+func runTestGit(t *testing.T, root string, args ...string) string {
+	t.Helper()
+	output, err := runTestGitCommand(root, args...)
+	if err != nil {
+		t.Fatalf("git %v failed: %v\n%s", args, err, output)
+	}
+	return output
+}
+
+func runTestGitExpectError(t *testing.T, root string, args ...string) string {
+	t.Helper()
+	output, err := runTestGitCommand(root, args...)
+	if err == nil {
+		t.Fatalf("git %v unexpectedly succeeded:\n%s", args, output)
+	}
+	return output
+}
+
+func runTestGitCommand(root string, args ...string) (string, error) {
+	cmd := exec.Command("git", args...)
+	cmd.Dir = root
+	configureHiddenCommand(cmd)
+	output, err := cmd.CombinedOutput()
+	return string(output), err
 }

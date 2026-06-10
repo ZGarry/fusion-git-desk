@@ -29,6 +29,14 @@ import type {
   UpdateResult,
 } from './types'
 
+type AdvisoryTone = 'danger' | 'warn' | 'info' | 'ok'
+
+interface RepoAdvisory {
+  tone: AdvisoryTone
+  label: string
+  detail: string
+}
+
 const settings = reactive<Settings>({
   lastRoot: '',
   maxDepth: 5,
@@ -85,6 +93,8 @@ const filteredRepositories = computed(() => {
     : repositories.value
 
   return [...list].sort((a, b) => {
+    const priority = repoAttentionRank(b) - repoAttentionRank(a)
+    if (priority !== 0) return priority
     if (a.isClean !== b.isClean) return a.isClean ? 1 : -1
     if (a.behind !== b.behind) return b.behind - a.behind
     return a.name.localeCompare(b.name)
@@ -102,11 +112,22 @@ const repositoryByPath = computed(() => {
 const selectedRepo = computed(() => repositoryByPath.value.get(selectedPath.value) ?? null)
 
 const repoStats = computed(() => {
-  const stats = { total: repositories.value.length, dirty: 0, behind: 0, ahead: 0 }
+  const stats = {
+    total: repositories.value.length,
+    dirty: 0,
+    conflicted: 0,
+    behind: 0,
+    ahead: 0,
+    noUpstream: 0,
+    pullBlocked: 0,
+  }
   for (const repo of repositories.value) {
     if (!repo.isClean) stats.dirty++
+    if (repo.status.conflicted > 0) stats.conflicted++
     if (repo.behind > 0) stats.behind++
     if (repo.ahead > 0) stats.ahead++
+    if (!repo.hasUpstream) stats.noUpstream++
+    if (isPullProtected(repo)) stats.pullBlocked++
   }
   return stats
 })
@@ -114,9 +135,21 @@ const repoStats = computed(() => {
 const selectedFiles = computed(() => selectedRepo.value?.status.files ?? [])
 const selectedFile = computed(() => selectedFiles.value.find((file) => file.path === selectedFilePath.value) ?? null)
 const selectedPullWarning = computed(() => {
-  if (!selectedRepo.value || selectedRepo.value.isClean || !settings.onlyPullCleanRepos) return ''
+  if (!selectedRepo.value) return ''
+  if (selectedRepo.value.status.conflicted > 0) {
+    return '当前仓库存在冲突，建议先解决冲突后再 Pull 或切换分支。'
+  }
+  if (!selectedRepo.value.hasUpstream) {
+    return '当前分支没有 upstream，Pull 会跳过；Fetch 仍可查看远端分支。'
+  }
+  if (selectedRepo.value.isClean || !settings.onlyPullCleanRepos) return ''
   return '当前仓库有本地改动，Pull 会跳过；Fetch 仍可更新远端引用。'
 })
+const selectedRepoAdvisories = computed(() => selectedRepo.value ? buildRepoAdvisories(selectedRepo.value) : [])
+const selectedRepoHasDanger = computed(() => selectedRepoAdvisories.value.some((item) => item.tone === 'danger'))
+const fetchAllTitle = computed(() => '全部 Fetch：更新远端引用，不合并到本地工作区。')
+const pullAllTitle = computed(() => summarizePullPreflight(repositories.value, '全部 Pull'))
+const selectedPullTitle = computed(() => selectedRepo.value ? summarizePullPreflight([selectedRepo.value], 'Pull') : 'Pull selected')
 const changedFileKeyword = computed(() => changedFileFilter.value.trim().toLowerCase())
 const filteredSelectedFiles = computed(() => {
   const keyword = changedFileKeyword.value
@@ -536,6 +569,122 @@ function changedCount(repo: Repository) {
   return repo.status.files.length
 }
 
+function repoAttentionRank(repo: Repository) {
+  let score = 0
+  if (repo.error) score += 10000
+  if (repo.status.conflicted > 0) score += 8000
+  if (!repo.hasUpstream) score += 3000
+  if (repo.behind > 0 && isPullProtected(repo)) score += 2600
+  else if (repo.behind > 0) score += 2200
+  if (!repo.isClean) score += 1200
+  if (repo.ahead > 0) score += 600
+  return score
+}
+
+function isPullProtected(repo: Repository) {
+  return settings.onlyPullCleanRepos && repo.hasUpstream && repo.status.conflicted === 0 && !repo.isClean
+}
+
+function buildRepoAdvisories(repo: Repository): RepoAdvisory[] {
+  const advisories: RepoAdvisory[] = []
+
+  if (repo.error) {
+    advisories.push({ tone: 'danger', label: '扫描异常', detail: repo.error })
+  }
+  if (repo.status.conflicted > 0) {
+    advisories.push({
+      tone: 'danger',
+      label: `存在冲突 ${repo.status.conflicted}`,
+      detail: '先解决冲突并刷新仓库，再执行 Pull、切换分支或提交。',
+    })
+  }
+  if (!repo.hasUpstream) {
+    advisories.push({
+      tone: 'warn',
+      label: '无 upstream',
+      detail: '当前分支没有跟踪分支；Fetch 可更新远端引用，Pull 会跳过并提示先设置 upstream。',
+    })
+  }
+  if (repo.behind > 0 && repo.hasUpstream) {
+    if (isPullProtected(repo)) {
+      advisories.push({
+        tone: 'warn',
+        label: `落后 ${repo.behind} 且有本地改动`,
+        detail: '当前保护策略会跳过 Pull；可以先查看 diff、提交/暂存改动，或只执行 Fetch。',
+      })
+    } else if (repo.isClean) {
+      advisories.push({
+        tone: 'info',
+        label: `可 Pull ${repo.behind}`,
+        detail: '工作区干净，适合执行 fast-forward Pull。',
+      })
+    } else {
+      advisories.push({
+        tone: 'warn',
+        label: `落后 ${repo.behind} 且工作区不干净`,
+        detail: '已关闭“仅干净仓库 Pull”，执行 Pull 前建议先确认本地 diff。',
+      })
+    }
+  }
+  if (repo.ahead > 0) {
+    advisories.push({
+      tone: 'info',
+      label: `本地领先 ${repo.ahead}`,
+      detail: '本地有提交尚未进入 upstream；检查后可按单仓库粒度 Push。',
+    })
+  }
+  if (!repo.isClean && repo.status.conflicted === 0) {
+    advisories.push({
+      tone: 'warn',
+      label: '工作区有改动',
+      detail: formatStatusBreakdown(repo.status),
+    })
+  }
+  if (repo.isClean && repo.hasUpstream && repo.ahead === 0 && repo.behind === 0 && !repo.error) {
+    advisories.push({
+      tone: 'ok',
+      label: '工作区干净',
+      detail: '当前分支与 upstream 没有已知领先/落后，可继续查看代码或 Fetch 更新远端引用。',
+    })
+  }
+
+  return advisories
+}
+
+function formatStatusBreakdown(status: Repository['status']) {
+  const parts = [
+    status.conflicted > 0 ? `冲突 ${status.conflicted}` : '',
+    status.staged > 0 ? `已暂存 ${status.staged}` : '',
+    status.unstaged > 0 ? `未暂存 ${status.unstaged}` : '',
+    status.untracked > 0 ? `未跟踪 ${status.untracked}` : '',
+  ].filter(Boolean)
+  return parts.length ? parts.join('，') : `${status.files.length} 个变更文件`
+}
+
+function summarizePullPreflight(repos: Repository[], action: string) {
+  if (!repos.length) return `${action}：当前没有仓库`
+
+  const conflicted = repos.filter((repo) => repo.status.conflicted > 0).length
+  const noUpstream = repos.filter((repo) => !repo.hasUpstream).length
+  const protectedDirty = repos.filter((repo) => isPullProtected(repo)).length
+  const cleanBehind = repos.filter((repo) => repo.hasUpstream && repo.isClean && repo.behind > 0 && repo.status.conflicted === 0).length
+  const parts = [
+    cleanBehind > 0 ? `${cleanBehind} 个落后且干净` : '',
+    protectedDirty > 0 ? `${protectedDirty} 个有本地改动会跳过` : '',
+    noUpstream > 0 ? `${noUpstream} 个无 upstream 会跳过` : '',
+    conflicted > 0 ? `${conflicted} 个有冲突会跳过` : '',
+  ].filter(Boolean)
+
+  return `${action}：${parts.length ? parts.join('；') : '执行 git pull --ff-only'}`
+}
+
+function branchCheckoutTitle(branch: BranchInfo) {
+  if (branch.current) return '当前分支'
+  if (selectedRepo.value?.status.conflicted) return '存在冲突，建议先解决冲突后再切换分支'
+  if (selectedRepo.value && !selectedRepo.value.isClean) return '有本地改动，切换分支可能被 Git 拒绝以保护文件'
+  return `切换到 ${branch.name}`
+}
+
 function formatDurationMs(value?: number) {
   const milliseconds = Number(value ?? 0)
   if (!Number.isFinite(milliseconds) || milliseconds <= 0) return '0ms'
@@ -750,11 +899,11 @@ function messageOf(error: unknown) {
       </div>
 
       <div class="top-actions">
-        <button title="Fetch all" :disabled="state.scanning || state.updating || repositories.length === 0" @click="updateRepositories('fetch', 'all')">
+        <button :title="fetchAllTitle" :disabled="state.scanning || state.updating || repositories.length === 0" @click="updateRepositories('fetch', 'all')">
           <Download :size="17" />
           全部 Fetch
         </button>
-        <button title="Pull clean repositories" :disabled="state.scanning || state.updating || repositories.length === 0" @click="updateRepositories('pull', 'all')">
+        <button :title="pullAllTitle" :disabled="state.scanning || state.updating || repositories.length === 0" @click="updateRepositories('pull', 'all')">
           <GitPullRequest :size="17" />
           全部 Pull
         </button>
@@ -770,6 +919,10 @@ function messageOf(error: unknown) {
         <span>{{ repoStats.dirty }}</span>
         有改动
       </div>
+      <div class="metric danger">
+        <span>{{ repoStats.conflicted }}</span>
+        冲突
+      </div>
       <div class="metric info">
         <span>{{ repoStats.behind }}</span>
         落后
@@ -777,6 +930,14 @@ function messageOf(error: unknown) {
       <div class="metric">
         <span>{{ repoStats.ahead }}</span>
         领先
+      </div>
+      <div class="metric warn">
+        <span>{{ repoStats.noUpstream }}</span>
+        无上游
+      </div>
+      <div class="metric warn">
+        <span>{{ repoStats.pullBlocked }}</span>
+        Pull保护
       </div>
 
       <div class="toggles">
@@ -843,7 +1004,7 @@ function messageOf(error: unknown) {
             v-for="repo in filteredRepositories"
             :key="repo.path"
             class="repo-row"
-            :class="{ active: repo.path === selectedPath, dirty: !repo.isClean }"
+            :class="{ active: repo.path === selectedPath, dirty: !repo.isClean, conflicted: repo.status.conflicted > 0 }"
             @click="selectedPath = repo.path"
           >
             <div class="repo-row-main">
@@ -853,8 +1014,11 @@ function messageOf(error: unknown) {
             <div class="repo-row-meta">
               <span class="branch-chip"><GitBranch :size="13" /> {{ repo.branch }}</span>
               <span v-if="repo.timings?.totalMs" class="pill timing" :title="scanTimingTitle(repo)">Scan {{ formatDurationMs(repo.timings?.totalMs) }}</span>
+              <span v-if="repo.status.conflicted" class="pill danger">冲突 {{ repo.status.conflicted }}</span>
+              <span v-if="!repo.hasUpstream" class="pill warn">无 upstream</span>
               <span v-if="repo.ahead" class="pill">领先 {{ repo.ahead }}</span>
               <span v-if="repo.behind" class="pill info">落后 {{ repo.behind }}</span>
+              <span v-if="isPullProtected(repo)" class="pill warn">Pull 保护</span>
               <span v-if="changedCount(repo)" class="pill warn">{{ changedCount(repo) }} 改动</span>
               <span v-else class="pill ok">干净</span>
             </div>
@@ -882,7 +1046,7 @@ function messageOf(error: unknown) {
               <Download :size="17" />
               Fetch
             </button>
-            <button :title="selectedPullWarning || 'Pull selected'" :disabled="state.scanning || state.updating" @click="updateRepositories('pull', 'selected')">
+            <button :title="selectedPullTitle" :disabled="state.scanning || state.updating" @click="updateRepositories('pull', 'selected')">
               <GitPullRequest :size="17" />
               Pull
             </button>
@@ -892,8 +1056,11 @@ function messageOf(error: unknown) {
         <div v-if="selectedRepo" class="repo-summary">
           <span><GitBranch :size="15" /> {{ selectedRepo.branch }}</span>
           <span>{{ selectedRepo.head }}</span>
+          <span v-if="selectedRepo.status.conflicted" class="summary-danger">冲突 {{ selectedRepo.status.conflicted }}</span>
+          <span v-else-if="!selectedRepo.isClean" class="summary-warn">{{ formatStatusBreakdown(selectedRepo.status) }}</span>
           <span v-if="selectedRepo.timings?.totalMs" :title="scanTimingTitle(selectedRepo)">Scan {{ formatDurationMs(selectedRepo.timings?.totalMs) }}</span>
           <span v-if="selectedRepo.upstream">{{ selectedRepo.upstream }}</span>
+          <span v-else class="summary-warn">无 upstream</span>
           <span v-if="selectedRepo.lastCommit.hash">{{ selectedRepo.lastCommit.hash }} {{ selectedRepo.lastCommit.subject }}</span>
         </div>
 
@@ -963,6 +1130,21 @@ function messageOf(error: unknown) {
       </section>
 
       <aside class="detail-panel">
+        <section v-if="selectedRepo" class="side-section repo-advisory-section">
+          <div class="side-head">
+            <h2>状态建议</h2>
+            <AlertTriangle v-if="selectedRepoHasDanger" :size="17" />
+            <Check v-else :size="17" />
+          </div>
+
+          <div class="advisory-list">
+            <div v-for="item in selectedRepoAdvisories" :key="`${item.label}-${item.detail}`" class="advisory-row" :class="item.tone">
+              <strong>{{ item.label }}</strong>
+              <small>{{ item.detail }}</small>
+            </div>
+          </div>
+        </section>
+
         <section class="side-section">
           <div class="side-head">
             <h2>分支</h2>
@@ -977,6 +1159,7 @@ function messageOf(error: unknown) {
                 :key="branch.name"
                 class="branch-row"
                 :class="{ current: branch.current }"
+                :title="branchCheckoutTitle(branch)"
                 :disabled="branch.current || Boolean(state.checkingOut)"
                 @click="checkoutBranch(branch)"
               >
