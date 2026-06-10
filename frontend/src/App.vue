@@ -54,6 +54,7 @@ const state = reactive({
   autoCycleNote: '自动刷新已暂停',
   autoCycleFailureCount: 0,
   autoCycleLastError: '',
+  autoCycleFailureTimes: [] as number[],
 })
 
 const rootInput = ref('')
@@ -70,6 +71,7 @@ const updateResults = ref<UpdateResult[]>([])
 const maxRenderedChangedFiles = 600
 const maxRenderedDiffFiles = 80
 const maxRenderedDiffLines = 4000
+const autoCycleFailureWindowMs = 10 * 60 * 1000
 
 let refreshTimer: number | undefined
 let settingsSaveTimer: number | undefined
@@ -128,9 +130,14 @@ const autoCycleAlert = computed(() => {
   const detail = state.autoCycleLastError ? `：${state.autoCycleLastError}` : ''
   return `连续失败 ${state.autoCycleFailureCount} 次${detail}`
 })
+const autoCycleWindowAlert = computed(() => {
+  const recentFailureCount = recentAutoCycleFailureCount()
+  if (recentFailureCount <= state.autoCycleFailureCount) return ''
+  return `近 10 分钟失败 ${recentFailureCount} 次（含已恢复）`
+})
 const autoCycleSeverityClass = computed(() => {
   if (state.autoCycleFailureCount >= 3) return 'danger'
-  if (state.autoCycleFailureCount > 0 || state.autoCycleNote.includes('跳过')) return 'warn'
+  if (state.autoCycleFailureCount > 0 || autoCycleWindowAlert.value || state.autoCycleNote.includes('跳过')) return 'warn'
   return ''
 })
 
@@ -405,8 +412,7 @@ function setupRefreshTimer() {
 
   if (!settings.autoRefresh) {
     state.autoCycleNote = '自动刷新已暂停'
-    state.autoCycleFailureCount = 0
-    state.autoCycleLastError = ''
+    clearAutoCycleFailure(true)
     return
   }
   state.autoCycleNote = `${autoCycleLabel()}每 ${settings.refreshIntervalSeconds} 秒运行`
@@ -548,15 +554,33 @@ function autoCycleLabel() {
   return '自动刷新'
 }
 
-function clearAutoCycleFailure() {
+function clearAutoCycleFailure(resetHistory = false) {
   state.autoCycleFailureCount = 0
   state.autoCycleLastError = ''
+  if (resetHistory) {
+    state.autoCycleFailureTimes = []
+  } else {
+    pruneAutoCycleFailureTimes()
+  }
 }
 
 function recordAutoCycleFailure(note: string, errorMessage: string) {
+  const now = Date.now()
+  pruneAutoCycleFailureTimes(now)
+  state.autoCycleFailureTimes.push(now)
   state.autoCycleNote = note
   state.autoCycleFailureCount++
   state.autoCycleLastError = errorMessage
+}
+
+function recentAutoCycleFailureCount() {
+  const cutoff = Date.now() - autoCycleFailureWindowMs
+  return state.autoCycleFailureTimes.filter((failedAt) => failedAt >= cutoff).length
+}
+
+function pruneAutoCycleFailureTimes(now = Date.now()) {
+  const cutoff = now - autoCycleFailureWindowMs
+  state.autoCycleFailureTimes = state.autoCycleFailureTimes.filter((failedAt) => failedAt >= cutoff)
 }
 
 function buildRenderedDiff(source: DiffResponse | null) {
@@ -733,6 +757,7 @@ function messageOf(error: unknown) {
           <span>{{ state.lastScan ? `上次扫描 ${formatDate(state.lastScan)}` : '未扫描' }}</span>
           <span class="scan-time-note" :class="autoCycleSeverityClass">{{ state.autoCycleNote }}</span>
           <span v-if="autoCycleAlert" class="scan-time-note" :class="autoCycleSeverityClass">{{ autoCycleAlert }}</span>
+          <span v-if="autoCycleWindowAlert" class="scan-time-note warn">{{ autoCycleWindowAlert }}</span>
         </div>
       </div>
     </section>
