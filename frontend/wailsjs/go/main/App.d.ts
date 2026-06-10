@@ -4,6 +4,8 @@ import {main} from '../models';
 
 export function CheckoutBranch(arg1:string,arg2:string):Promise<main.CommandResult>;
 
+export function CommitRepository(arg1:string,arg2:string):Promise<main.CommandResult>;
+
 export function GetBranches(arg1:string):Promise<main.BranchResponse>;
 
 export function GetInitialState():Promise<main.InitialState>;

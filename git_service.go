@@ -424,6 +424,40 @@ func (g *GitService) UnstageFile(path string, filePath string) (CommandResult, e
 	return g.mutateIndexFile(path, filePath, "unstage")
 }
 
+func (g *GitService) CommitRepository(path string, message string) (CommandResult, error) {
+	message = strings.TrimSpace(message)
+	if message == "" {
+		return CommandResult{}, errors.New("commit message is required")
+	}
+	repoPath, status, err := g.repositoryStatus(path)
+	if err != nil {
+		return CommandResult{}, err
+	}
+	result := CommandResult{Path: repoPath, FinishedAt: nowISO()}
+	if status.Conflicted > 0 {
+		result.Message = "工作区存在冲突，请先解决冲突后再提交"
+		return result, nil
+	}
+	if status.Staged == 0 {
+		result.Message = "没有已暂存文件，请先 Stage 要提交的文件"
+		return result, nil
+	}
+
+	args := []string{"commit", "-m", message}
+	stdout, stderr, err := g.runGit(repoPath, 4*g.commandTimeout, args...)
+	result.Command = "git commit -m <message>"
+	result.Success = err == nil
+	result.Stdout = stdout
+	result.Stderr = stderr
+	result.FinishedAt = nowISO()
+	if err != nil {
+		result.Message = firstNonEmpty(stderr, err.Error())
+		return result, nil
+	}
+	result.Message = firstNonEmpty(stdout, stderr, "commit created")
+	return result, nil
+}
+
 func (g *GitService) mutateIndexFile(path string, filePath string, action string) (CommandResult, error) {
 	repoPath, status, err := g.repositoryStatus(path)
 	if err != nil {

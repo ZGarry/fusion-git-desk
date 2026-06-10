@@ -234,6 +234,54 @@ func TestStageAndUnstageFile(t *testing.T) {
 	}
 }
 
+func TestCommitRepositoryCommitsStagedFiles(t *testing.T) {
+	root := initTestRepo(t)
+	commitTestFile(t, root, "notes.txt", "one\n", "initial commit")
+	if err := os.WriteFile(filepath.Join(root, "notes.txt"), []byte("one\ntwo\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if result, err := NewGitService().StageFile(root, "notes.txt"); err != nil || !result.Success {
+		t.Fatalf("stage failed: result=%#v err=%v", result, err)
+	}
+
+	result, err := NewGitService().CommitRepository(root, "update notes")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Success {
+		t.Fatalf("expected commit to succeed: %#v", result)
+	}
+	_, status, err := NewGitService().repositoryStatus(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(status.Files) != 0 {
+		t.Fatalf("expected clean repo after commit, got %#v", status)
+	}
+	if subject := runTestGit(t, root, "log", "-1", "--pretty=%s"); strings.TrimSpace(subject) != "update notes" {
+		t.Fatalf("unexpected commit subject: %q", subject)
+	}
+}
+
+func TestCommitRepositoryRequiresStagedFiles(t *testing.T) {
+	root := initTestRepo(t)
+	commitTestFile(t, root, "notes.txt", "one\n", "initial commit")
+	if err := os.WriteFile(filepath.Join(root, "notes.txt"), []byte("one\ntwo\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := NewGitService().CommitRepository(root, "update notes")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Success {
+		t.Fatalf("commit without staged files should not succeed: %#v", result)
+	}
+	if !strings.Contains(result.Message, "暂存") {
+		t.Fatalf("expected staged guidance, got %q", result.Message)
+	}
+}
+
 func TestStageFileRejectsParentTraversal(t *testing.T) {
 	root := initTestRepo(t)
 	commitTestFile(t, root, "notes.txt", "one\n", "initial commit")

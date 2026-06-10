@@ -6,6 +6,10 @@ export function CheckoutBranch(arg1, arg2) {
   return window['go']['main']['App']['CheckoutBranch'](arg1, arg2);
 }
 
+export function CommitRepository(arg1, arg2) {
+  return window['go']['main']['App']['CommitRepository'](arg1, arg2);
+}
+
 export function GetBranches(arg1) {
   return window['go']['main']['App']['GetBranches'](arg1);
 }

@@ -79,6 +79,13 @@
 - 性能取舍：每次文件级操作会增加一次 Git index 命令和一次仓库刷新，换取明确的状态闭环；操作期间会阻止扫描、pull/fetch 和切分支，避免并发改 index。
 - 验收方式：`go test ./...` 覆盖 stage/unstage 与路径边界；`cd frontend && pnpm build` 验证前端类型和构建。
 
+### 当前仓库提交草稿
+
+- 优化前问题：Stage/Unstage 后仍只能在外部命令行提交，用户无法在同一个代码巡检上下文内完成小步提交。
+- 采取策略：右侧增加“提交草稿”面板，仅在当前仓库存在 staged 文件且提交消息非空时允许 Commit；后端提交前检查冲突和 staged 数量，提交后刷新仓库状态并切到 HEAD diff。
+- 性能取舍：提交会执行一次 `git commit` 和一次仓库刷新；提交期间会阻止扫描、pull/fetch、切分支和文件暂存操作，避免并发修改 index。
+- 验收方式：`go test ./...` 覆盖 staged commit 和无 staged 文件拒绝；`cd frontend && pnpm build` 验证前端类型和构建。
+
 ### 扫描耗时指标
 
 - 优化前问题：多仓库扫描会串起 `rev-parse`、`status`、`remote get-url`、`log -1` 等 Git 调用，但界面只能看到最终状态，难以判断慢在状态扫描、远端信息还是最后提交读取。

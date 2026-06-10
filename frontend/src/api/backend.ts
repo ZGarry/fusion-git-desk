@@ -1,5 +1,6 @@
 import {
   CheckoutBranch,
+  CommitRepository,
   GetBranches,
   GetInitialState,
   GetRepositoryFileDiff,
@@ -178,6 +179,27 @@ export const api = {
       return { path, command: `git checkout ${branch}`, success: true, message: 'branch checked out', stdout: '', stderr: '', finishedAt: new Date().toISOString() }
     }
     return CheckoutBranch(path, branch) as Promise<CommandResult>
+  },
+
+  async commitRepository(path: string, message: string): Promise<CommandResult> {
+    if (!hasBridge()) {
+      const staged = demoRepo.status.files.filter((item) => item.staged)
+      if (!message.trim()) {
+        return { path, command: 'git commit -m <message>', success: false, message: 'commit message is required', stdout: '', stderr: '', finishedAt: new Date().toISOString() }
+      }
+      if (!staged.length) {
+        return { path, command: 'git commit -m <message>', success: false, message: '没有已暂存文件，请先 Stage 要提交的文件', stdout: '', stderr: '', finishedAt: new Date().toISOString() }
+      }
+      demoRepo.status.files = demoRepo.status.files.filter((item) => !item.staged)
+      demoRepo.status.staged = 0
+      demoRepo.status.unstaged = demoRepo.status.files.filter((item) => item.unstaged).length
+      demoRepo.status.untracked = demoRepo.status.files.filter((item) => item.status === '??').length
+      demoRepo.isClean = demoRepo.status.files.length === 0
+      demoRepo.ahead += 1
+      demoRepo.lastCommit = { hash: 'demo', author: 'Codex', relativeTime: 'just now', subject: message.trim() }
+      return { path, command: 'git commit -m <message>', success: true, message: `[main demo] ${message.trim()}`, stdout: '', stderr: '', finishedAt: new Date().toISOString() }
+    }
+    return CommitRepository(path, message) as Promise<CommandResult>
   },
 
   async stageFile(path: string, filePath: string): Promise<CommandResult> {

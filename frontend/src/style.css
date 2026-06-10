@@ -22,7 +22,8 @@ body,
 }
 
 button,
-input {
+input,
+textarea {
   font: inherit;
 }
 
@@ -64,7 +65,18 @@ input {
   outline: none;
 }
 
-input:focus {
+textarea {
+  border: 1px solid #cbd6ce;
+  border-radius: 7px;
+  background: #ffffff;
+  color: #1d2824;
+  padding: 8px 10px;
+  outline: none;
+  resize: vertical;
+}
+
+input:focus,
+textarea:focus {
   border-color: #38715c;
   box-shadow: 0 0 0 3px rgba(56, 113, 92, 0.13);
 }
@@ -824,6 +836,38 @@ input:focus {
   padding: 8px 2px 2px;
   color: #7a5a22;
   font-size: 12px;
+}
+
+.commit-box {
+  padding: 8px;
+}
+
+.commit-box textarea {
+  width: 100%;
+  min-height: 74px;
+  max-height: 150px;
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.commit-actions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding-top: 8px;
+}
+
+.commit-actions small {
+  min-width: 0;
+  color: #65736d;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.commit-actions small.warn {
+  color: #8b4f0f;
 }
 
 .file-status {

@@ -6,6 +6,7 @@ import {
   Download,
   FolderOpen,
   GitBranch,
+  GitCommit,
   GitCompare,
   GitPullRequest,
   Minus,
@@ -59,6 +60,7 @@ const state = reactive({
   loadingBranches: false,
   checkingOut: '',
   indexingFile: '',
+  committing: false,
   error: '',
   notice: '',
   lastScan: '',
@@ -71,6 +73,7 @@ const state = reactive({
 const rootInput = ref('')
 const repoFilter = ref('')
 const changedFileFilter = ref('')
+const commitMessage = ref('')
 const repositories = ref<Repository[]>([])
 const selectedPath = ref('')
 const selectedFilePath = ref('')
@@ -150,9 +153,18 @@ const selectedPullWarning = computed(() => {
 })
 const selectedRepoAdvisories = computed(() => selectedRepo.value ? buildRepoAdvisories(selectedRepo.value) : [])
 const selectedRepoHasDanger = computed(() => selectedRepoAdvisories.value.some((item) => item.tone === 'danger'))
-const gitActionBusy = computed(() => state.scanning || state.updating || Boolean(state.indexingFile))
+const gitActionBusy = computed(() => state.scanning || state.updating || Boolean(state.indexingFile) || state.committing)
 const selectedFileCanStage = computed(() => Boolean(selectedFile.value && (selectedFile.value.unstaged || selectedFile.value.status === '??')))
 const selectedFileCanUnstage = computed(() => Boolean(selectedFile.value?.staged))
+const selectedStagedFiles = computed(() => selectedFiles.value.filter((file) => file.staged))
+const commitBlockedReason = computed(() => {
+  if (!selectedRepo.value) return '请选择仓库'
+  if (selectedRepo.value.status.conflicted > 0) return '存在冲突'
+  if (selectedStagedFiles.value.length === 0) return '没有已暂存文件'
+  if (!commitMessage.value.trim()) return '请输入提交消息'
+  return ''
+})
+const canCommitSelectedRepo = computed(() => !gitActionBusy.value && !commitBlockedReason.value)
 const fetchAllTitle = computed(() => '全部 Fetch：更新远端引用，不合并到本地工作区。')
 const pullAllTitle = computed(() => summarizePullPreflight(repositories.value, '全部 Pull'))
 const selectedPullTitle = computed(() => selectedRepo.value ? summarizePullPreflight([selectedRepo.value], 'Pull') : 'Pull selected')
@@ -214,6 +226,7 @@ onBeforeUnmount(() => {
 watch(selectedPath, () => {
   selectedFilePath.value = ''
   changedFileFilter.value = ''
+  commitMessage.value = ''
   void loadSelectedDetails()
 })
 
@@ -503,6 +516,54 @@ async function mutateSelectedFileIndex(action: 'stage' | 'unstage') {
   }
 }
 
+async function commitSelectedRepo() {
+  if (!selectedRepo.value) return
+  if (guardBusyAction('提交')) {
+    return
+  }
+  const message = commitMessage.value.trim()
+  if (!message) {
+    state.error = '请输入提交消息'
+    return
+  }
+  if (selectedRepo.value.status.conflicted > 0) {
+    state.error = '当前仓库存在冲突，请先解决冲突后再提交'
+    return
+  }
+  if (selectedStagedFiles.value.length === 0) {
+    state.error = '没有已暂存文件，请先 Stage 要提交的文件'
+    return
+  }
+
+  const repoPath = selectedRepo.value.path
+  state.error = ''
+  state.committing = true
+  try {
+    const result = await api.commitRepository(repoPath, message)
+    if (!result.success) {
+      state.error = result.message
+      return
+    }
+
+    const refreshed = await api.refreshRepository(result.path || repoPath)
+    replaceRepository(refreshed)
+    selectedPath.value = refreshed.path
+    selectedFilePath.value = ''
+    commitMessage.value = ''
+    const previousMode = activeDiffMode.value
+    activeDiffMode.value = 'head'
+    if (previousMode === activeDiffMode.value) {
+      void loadDiff()
+    }
+    void loadBranches()
+    state.notice = result.message
+  } catch (error) {
+    state.error = messageOf(error)
+  } finally {
+    state.committing = false
+  }
+}
+
 function setupRefreshTimer() {
   if (refreshTimer) {
     window.clearInterval(refreshTimer)
@@ -776,6 +837,8 @@ function guardBusyAction(action: string, showNotice = true) {
     reason = '批量更新进行中'
   } else if (state.indexingFile) {
     reason = '文件暂存操作进行中'
+  } else if (state.committing) {
+    reason = '提交进行中'
   }
   if (!reason) {
     return false
@@ -1287,6 +1350,30 @@ function messageOf(error: unknown) {
               <div v-if="hiddenSelectedFileCount" class="list-limit-note">
                 还有 {{ hiddenSelectedFileCount }} 个匹配文件未渲染。
               </div>
+            </div>
+          </div>
+        </section>
+
+        <section v-if="selectedRepo" class="side-section commit-section">
+          <div class="side-head">
+            <h2>提交草稿</h2>
+            <span>{{ selectedStagedFiles.length }} 已暂存</span>
+          </div>
+
+          <div class="commit-box">
+            <textarea
+              v-model="commitMessage"
+              :disabled="gitActionBusy"
+              maxlength="240"
+              placeholder="Commit message"
+              rows="3"
+            />
+            <div class="commit-actions">
+              <small :class="{ warn: Boolean(commitBlockedReason) }">{{ commitBlockedReason || '准备提交当前仓库' }}</small>
+              <button title="提交当前仓库已暂存文件" :disabled="!canCommitSelectedRepo" @click="commitSelectedRepo">
+                <GitCommit :size="15" />
+                Commit
+              </button>
             </div>
           </div>
         </section>
