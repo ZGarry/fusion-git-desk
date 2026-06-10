@@ -38,6 +38,14 @@ export function ScanRepositories(arg1, arg2) {
   return window['go']['main']['App']['ScanRepositories'](arg1, arg2);
 }
 
+export function StageFile(arg1, arg2) {
+  return window['go']['main']['App']['StageFile'](arg1, arg2);
+}
+
+export function UnstageFile(arg1, arg2) {
+  return window['go']['main']['App']['UnstageFile'](arg1, arg2);
+}
+
 export function UpdateRepositories(arg1) {
   return window['go']['main']['App']['UpdateRepositories'](arg1);
 }

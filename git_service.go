@@ -416,6 +416,54 @@ func (g *GitService) CheckoutBranch(path string, branch string) (CommandResult, 
 	return result, nil
 }
 
+func (g *GitService) StageFile(path string, filePath string) (CommandResult, error) {
+	return g.mutateIndexFile(path, filePath, "stage")
+}
+
+func (g *GitService) UnstageFile(path string, filePath string) (CommandResult, error) {
+	return g.mutateIndexFile(path, filePath, "unstage")
+}
+
+func (g *GitService) mutateIndexFile(path string, filePath string, action string) (CommandResult, error) {
+	repoPath, status, err := g.repositoryStatus(path)
+	if err != nil {
+		return CommandResult{}, err
+	}
+	changedFile := findChangedFile(status.Files, filePath)
+	result := CommandResult{Path: repoPath, FinishedAt: nowISO()}
+	if changedFile == nil {
+		result.Message = "文件不在当前变更列表中，请先刷新仓库"
+		return result, nil
+	}
+	pathspecs, err := changedFilePathspecs(repoPath, *changedFile)
+	if err != nil {
+		result.Message = err.Error()
+		return result, nil
+	}
+
+	var args []string
+	var fallbackMessage string
+	if action == "unstage" {
+		args = append([]string{"restore", "--staged", "--"}, pathspecs...)
+		fallbackMessage = fmt.Sprintf("已取消暂存 %s", changedFile.Path)
+	} else {
+		args = append([]string{"add", "--"}, pathspecs...)
+		fallbackMessage = fmt.Sprintf("已暂存 %s", changedFile.Path)
+	}
+	stdout, stderr, err := g.runGit(repoPath, 2*g.commandTimeout, args...)
+	result.Command = "git " + strings.Join(args, " ")
+	result.Success = err == nil
+	result.Stdout = stdout
+	result.Stderr = stderr
+	result.FinishedAt = nowISO()
+	if err != nil {
+		result.Message = firstNonEmpty(stderr, err.Error())
+		return result, nil
+	}
+	result.Message = firstNonEmpty(stdout, stderr, fallbackMessage)
+	return result, nil
+}
+
 func (g *GitService) Diff(path string, mode string) (DiffResponse, error) {
 	repoPath, status, err := g.repositoryStatus(path)
 	if err != nil {
@@ -803,6 +851,44 @@ func untrackedPaths(files []ChangedFile) []string {
 
 func isUntrackedStatus(status string) bool {
 	return strings.TrimSpace(status) == "??"
+}
+
+func changedFilePathspecs(repoPath string, file ChangedFile) ([]string, error) {
+	candidates := []string{file.Path}
+	if strings.TrimSpace(file.OldPath) != "" {
+		candidates = append(candidates, file.OldPath)
+	}
+	pathspecs := make([]string, 0, len(candidates))
+	seen := make(map[string]struct{}, len(candidates))
+	for _, candidate := range candidates {
+		pathspec, err := safeRepoPathspec(repoPath, candidate)
+		if err != nil {
+			return nil, err
+		}
+		if _, ok := seen[pathspec]; ok {
+			continue
+		}
+		seen[pathspec] = struct{}{}
+		pathspecs = append(pathspecs, pathspec)
+	}
+	return pathspecs, nil
+}
+
+func safeRepoPathspec(repoPath string, path string) (string, error) {
+	path = strings.TrimSpace(filepath.ToSlash(path))
+	if path == "" {
+		return "", errors.New("file path is required")
+	}
+	cleanPath := filepath.Clean(filepath.FromSlash(path))
+	if filepath.IsAbs(cleanPath) {
+		return "", fmt.Errorf("absolute file paths are not allowed: %s", path)
+	}
+	fullPath := filepath.Join(repoPath, cleanPath)
+	rel, err := filepath.Rel(repoPath, fullPath)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) || filepath.IsAbs(rel) {
+		return "", fmt.Errorf("file is outside repository: %s", path)
+	}
+	return filepath.ToSlash(rel), nil
 }
 
 func untrackedSummaryFiles(paths []string, limit int) ([]DiffFile, bool) {

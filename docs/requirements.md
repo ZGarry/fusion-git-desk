@@ -11,13 +11,13 @@
 - 支持批量 fetch 和仅干净仓库 pull
 - 支持 working/staged/HEAD diff
 - 支持点击变更文件查看文件级 diff
+- 支持对当前选中文件执行 stage/unstage，并在操作后刷新仓库状态和 diff
 - 对未跟踪文本文件生成新增文件 diff 预览
 - 对无文本 diff 的变更展示原因说明
 
 ## 后续路线
 
 - 仓库收藏、分组、标签
-- 文件级 stage/unstage
 - commit 草稿和 push
 - 系统托盘和后台计划任务
 - manifest 导入导出

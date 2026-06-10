@@ -20,4 +20,8 @@ export function SaveSettings(arg1:main.Settings):Promise<void>;
 
 export function ScanRepositories(arg1:string,arg2:number):Promise<main.ScanResponse>;
 
+export function StageFile(arg1:string,arg2:string):Promise<main.CommandResult>;
+
+export function UnstageFile(arg1:string,arg2:string):Promise<main.CommandResult>;
+
 export function UpdateRepositories(arg1:main.UpdateRequest):Promise<Array<main.UpdateResult>>;

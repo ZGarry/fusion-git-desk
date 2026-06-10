@@ -8,6 +8,8 @@ import {
   RefreshRepository,
   SaveSettings,
   ScanRepositories,
+  StageFile,
+  UnstageFile,
   UpdateRepositories,
 } from '../../wailsjs/go/main/App'
 import type {
@@ -176,6 +178,36 @@ export const api = {
       return { path, command: `git checkout ${branch}`, success: true, message: 'branch checked out', stdout: '', stderr: '', finishedAt: new Date().toISOString() }
     }
     return CheckoutBranch(path, branch) as Promise<CommandResult>
+  },
+
+  async stageFile(path: string, filePath: string): Promise<CommandResult> {
+    if (!hasBridge()) {
+      const file = demoRepo.status.files.find((item) => item.path === filePath)
+      if (file) {
+        file.staged = true
+        file.unstaged = false
+        if (file.status === '??') file.status = 'A'
+        demoRepo.status.staged = demoRepo.status.files.filter((item) => item.staged).length
+        demoRepo.status.unstaged = demoRepo.status.files.filter((item) => item.unstaged).length
+        demoRepo.status.untracked = demoRepo.status.files.filter((item) => item.status === '??').length
+      }
+      return { path, command: `git add -- ${filePath}`, success: Boolean(file), message: file ? `已暂存 ${filePath}` : '文件不在当前变更列表中，请先刷新仓库', stdout: '', stderr: '', finishedAt: new Date().toISOString() }
+    }
+    return StageFile(path, filePath) as Promise<CommandResult>
+  },
+
+  async unstageFile(path: string, filePath: string): Promise<CommandResult> {
+    if (!hasBridge()) {
+      const file = demoRepo.status.files.find((item) => item.path === filePath)
+      if (file) {
+        file.staged = false
+        file.unstaged = true
+        demoRepo.status.staged = demoRepo.status.files.filter((item) => item.staged).length
+        demoRepo.status.unstaged = demoRepo.status.files.filter((item) => item.unstaged).length
+      }
+      return { path, command: `git restore --staged -- ${filePath}`, success: Boolean(file), message: file ? `已取消暂存 ${filePath}` : '文件不在当前变更列表中，请先刷新仓库', stdout: '', stderr: '', finishedAt: new Date().toISOString() }
+    }
+    return UnstageFile(path, filePath) as Promise<CommandResult>
   },
 
   async updateRepositories(request: UpdateRequest): Promise<UpdateResult[]> {

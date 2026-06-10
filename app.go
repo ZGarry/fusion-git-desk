@@ -101,6 +101,14 @@ func (a *App) CheckoutBranch(path string, branch string) (CommandResult, error) 
 	return a.git.CheckoutBranch(path, branch)
 }
 
+func (a *App) StageFile(path string, filePath string) (CommandResult, error) {
+	return a.git.StageFile(path, filePath)
+}
+
+func (a *App) UnstageFile(path string, filePath string) (CommandResult, error) {
+	return a.git.UnstageFile(path, filePath)
+}
+
 func (a *App) UpdateRepositories(request UpdateRequest) ([]UpdateResult, error) {
 	return a.git.UpdateRepositories(request), nil
 }

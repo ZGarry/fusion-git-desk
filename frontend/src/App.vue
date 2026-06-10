@@ -8,8 +8,10 @@ import {
   GitBranch,
   GitCompare,
   GitPullRequest,
+  Minus,
   Pause,
   Play,
+  Plus,
   RefreshCw,
   RotateCw,
   Search,
@@ -56,6 +58,7 @@ const state = reactive({
   loadingDiff: false,
   loadingBranches: false,
   checkingOut: '',
+  indexingFile: '',
   error: '',
   notice: '',
   lastScan: '',
@@ -147,6 +150,9 @@ const selectedPullWarning = computed(() => {
 })
 const selectedRepoAdvisories = computed(() => selectedRepo.value ? buildRepoAdvisories(selectedRepo.value) : [])
 const selectedRepoHasDanger = computed(() => selectedRepoAdvisories.value.some((item) => item.tone === 'danger'))
+const gitActionBusy = computed(() => state.scanning || state.updating || Boolean(state.indexingFile))
+const selectedFileCanStage = computed(() => Boolean(selectedFile.value && (selectedFile.value.unstaged || selectedFile.value.status === '??')))
+const selectedFileCanUnstage = computed(() => Boolean(selectedFile.value?.staged))
 const fetchAllTitle = computed(() => '全部 Fetch：更新远端引用，不合并到本地工作区。')
 const pullAllTitle = computed(() => summarizePullPreflight(repositories.value, '全部 Pull'))
 const selectedPullTitle = computed(() => selectedRepo.value ? summarizePullPreflight([selectedRepo.value], 'Pull') : 'Pull selected')
@@ -392,6 +398,12 @@ async function updateRepositories(mode: UpdateMode, scope: 'selected' | 'all' = 
     }
     return null
   }
+  if (state.indexingFile) {
+    if (!silent) {
+      state.notice = `文件暂存操作进行中，已跳过${mode === 'pull' ? '拉取' : '获取'}请求`
+    }
+    return null
+  }
 
   state.error = ''
   state.updating = true
@@ -423,6 +435,9 @@ async function updateRepositories(mode: UpdateMode, scope: 'selected' | 'all' = 
 
 async function checkoutBranch(branch: BranchInfo) {
   if (!selectedRepo.value || branch.remote || branch.current) return
+  if (guardBusyAction('切换分支')) {
+    return
+  }
 
   state.checkingOut = branch.name
   state.error = ''
@@ -438,6 +453,53 @@ async function checkoutBranch(branch: BranchInfo) {
     state.error = messageOf(error)
   } finally {
     state.checkingOut = ''
+  }
+}
+
+async function stageSelectedFile() {
+  await mutateSelectedFileIndex('stage')
+}
+
+async function unstageSelectedFile() {
+  await mutateSelectedFileIndex('unstage')
+}
+
+async function mutateSelectedFileIndex(action: 'stage' | 'unstage') {
+  if (!selectedRepo.value || !selectedFile.value) return
+  if (guardBusyAction(action === 'stage' ? '暂存文件' : '取消暂存')) {
+    return
+  }
+
+  const repoPath = selectedRepo.value.path
+  const filePath = selectedFile.value.path
+  state.error = ''
+  state.indexingFile = filePath
+  try {
+    const result = action === 'stage'
+      ? await api.stageFile(repoPath, filePath)
+      : await api.unstageFile(repoPath, filePath)
+    if (!result.success) {
+      state.error = result.message
+      return
+    }
+
+    const refreshed = await api.refreshRepository(result.path || repoPath)
+    replaceRepository(refreshed)
+    selectedPath.value = refreshed.path
+    const fileStillChanged = refreshed.status.files.some((file) => file.path === filePath || file.oldPath === filePath)
+    if (!fileStillChanged) {
+      selectedFilePath.value = ''
+    }
+    const previousMode = activeDiffMode.value
+    activeDiffMode.value = action === 'stage' ? 'staged' : 'working'
+    if (previousMode === activeDiffMode.value) {
+      void loadDiff()
+    }
+    state.notice = result.message
+  } catch (error) {
+    state.error = messageOf(error)
+  } finally {
+    state.indexingFile = ''
   }
 }
 
@@ -712,6 +774,8 @@ function guardBusyAction(action: string, showNotice = true) {
     reason = '已有扫描或刷新进行中'
   } else if (state.updating) {
     reason = '批量更新进行中'
+  } else if (state.indexingFile) {
+    reason = '文件暂存操作进行中'
   }
   if (!reason) {
     return false
@@ -892,18 +956,18 @@ function messageOf(error: unknown) {
           深度
           <input v-model.number="settings.maxDepth" min="1" max="12" type="number" />
         </label>
-        <button class="primary-button" :disabled="state.scanning || state.updating" @click="scanRepositories(true)">
+        <button class="primary-button" :disabled="gitActionBusy" @click="scanRepositories(true)">
           <RefreshCw :size="17" :class="{ spin: state.scanning }" />
           扫描
         </button>
       </div>
 
       <div class="top-actions">
-        <button :title="fetchAllTitle" :disabled="state.scanning || state.updating || repositories.length === 0" @click="updateRepositories('fetch', 'all')">
+        <button :title="fetchAllTitle" :disabled="gitActionBusy || repositories.length === 0" @click="updateRepositories('fetch', 'all')">
           <Download :size="17" />
           全部 Fetch
         </button>
-        <button :title="pullAllTitle" :disabled="state.scanning || state.updating || repositories.length === 0" @click="updateRepositories('pull', 'all')">
+        <button :title="pullAllTitle" :disabled="gitActionBusy || repositories.length === 0" @click="updateRepositories('pull', 'all')">
           <GitPullRequest :size="17" />
           全部 Pull
         </button>
@@ -1038,15 +1102,15 @@ function messageOf(error: unknown) {
             <p v-if="selectedPullWarning" class="repo-action-note">{{ selectedPullWarning }}</p>
           </div>
           <div class="repo-actions">
-            <button title="刷新仓库" :disabled="state.scanning || state.updating" @click="refreshSelected">
+            <button title="刷新仓库" :disabled="gitActionBusy" @click="refreshSelected">
               <RotateCw :size="17" :class="{ spin: state.scanning }" />
               刷新
             </button>
-            <button title="Fetch selected: 更新远端引用，不会合并到本地工作区" :disabled="state.scanning || state.updating" @click="updateRepositories('fetch', 'selected')">
+            <button title="Fetch selected: 更新远端引用，不会合并到本地工作区" :disabled="gitActionBusy" @click="updateRepositories('fetch', 'selected')">
               <Download :size="17" />
               Fetch
             </button>
-            <button :title="selectedPullTitle" :disabled="state.scanning || state.updating" @click="updateRepositories('pull', 'selected')">
+            <button :title="selectedPullTitle" :disabled="gitActionBusy" @click="updateRepositories('pull', 'selected')">
               <GitPullRequest :size="17" />
               Pull
             </button>
@@ -1072,7 +1136,17 @@ function messageOf(error: unknown) {
 
         <div v-if="selectedRepo && selectedFilePath" class="diff-target">
           <span>当前文件：{{ selectedFilePath }}<template v-if="selectedFile"> · {{ selectedFile.status }}</template></span>
-          <button @click="clearSelectedFile">全部文件</button>
+          <div class="diff-target-actions">
+            <button title="暂存当前文件" :disabled="gitActionBusy || !selectedFileCanStage" @click="stageSelectedFile">
+              <Plus :size="15" />
+              Stage
+            </button>
+            <button title="取消暂存当前文件" :disabled="gitActionBusy || !selectedFileCanUnstage" @click="unstageSelectedFile">
+              <Minus :size="15" />
+              Unstage
+            </button>
+            <button @click="clearSelectedFile">全部文件</button>
+          </div>
         </div>
 
         <div class="diff-scroll">
@@ -1160,7 +1234,7 @@ function messageOf(error: unknown) {
                 class="branch-row"
                 :class="{ current: branch.current }"
                 :title="branchCheckoutTitle(branch)"
-                :disabled="branch.current || Boolean(state.checkingOut)"
+                :disabled="branch.current || Boolean(state.checkingOut) || gitActionBusy"
                 @click="checkoutBranch(branch)"
               >
                 <span>{{ branch.name }}</span>

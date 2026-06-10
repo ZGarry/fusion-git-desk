@@ -25,7 +25,7 @@
 
 ### P1：Git 操作闭环
 
-- 文件级 stage/unstage：先限制在单文件和显式确认操作。
+- 文件级 stage/unstage：先限制在单文件和显式操作。（初版已支持选中文件 Stage/Unstage，后端校验仓库内路径并刷新 diff。）
 - Commit 草稿：提供消息输入、待提交文件预览和提交后刷新。
 - Push：默认只对当前仓库执行，显示 upstream 和 ahead 数量，避免批量误推。
 

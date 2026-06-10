@@ -549,6 +549,19 @@ input:focus {
   min-height: 28px;
 }
 
+.diff-target-actions {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.diff-target-actions button {
+  min-width: 0;
+  padding: 0 9px;
+  white-space: nowrap;
+}
+
 .diff-scroll {
   min-height: 0;
   overflow: auto;

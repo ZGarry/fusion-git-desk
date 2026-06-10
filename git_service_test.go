@@ -196,6 +196,71 @@ func TestPullSkipsRepositoryWithConflicts(t *testing.T) {
 	}
 }
 
+func TestStageAndUnstageFile(t *testing.T) {
+	root := initTestRepo(t)
+	commitTestFile(t, root, "notes.txt", "one\n", "initial commit")
+	if err := os.WriteFile(filepath.Join(root, "notes.txt"), []byte("one\ntwo\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	stageResult, err := NewGitService().StageFile(root, "notes.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !stageResult.Success {
+		t.Fatalf("expected stage to succeed: %#v", stageResult)
+	}
+	_, stagedStatus, err := NewGitService().repositoryStatus(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stagedStatus.Staged != 1 || stagedStatus.Unstaged != 0 {
+		t.Fatalf("expected staged-only change, got %#v", stagedStatus)
+	}
+
+	unstageResult, err := NewGitService().UnstageFile(root, "notes.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !unstageResult.Success {
+		t.Fatalf("expected unstage to succeed: %#v", unstageResult)
+	}
+	_, unstagedStatus, err := NewGitService().repositoryStatus(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if unstagedStatus.Staged != 0 || unstagedStatus.Unstaged != 1 {
+		t.Fatalf("expected unstaged-only change, got %#v", unstagedStatus)
+	}
+}
+
+func TestStageFileRejectsParentTraversal(t *testing.T) {
+	root := initTestRepo(t)
+	commitTestFile(t, root, "notes.txt", "one\n", "initial commit")
+
+	result, err := NewGitService().StageFile(root, "../outside.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Success {
+		t.Fatalf("expected unsafe path to fail, got %#v", result)
+	}
+	if !strings.Contains(result.Message, "变更列表") {
+		t.Fatalf("expected changed-list guidance, got %q", result.Message)
+	}
+}
+
+func TestSafeRepoPathspecRejectsParentTraversal(t *testing.T) {
+	root := t.TempDir()
+
+	if _, err := safeRepoPathspec(root, "../outside.txt"); err == nil {
+		t.Fatal("expected parent traversal to be rejected")
+	}
+	if _, err := safeRepoPathspec(root, filepath.Join(root, "absolute.txt")); err == nil {
+		t.Fatal("expected absolute path to be rejected")
+	}
+}
+
 func initTestRepo(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
