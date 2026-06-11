@@ -10,7 +10,7 @@
 - 自动化可以提出需求和实现改动，但不能跳过质量门禁。
 - Git 写操作必须显式、可追踪、可回滚。默认直接在 `main` 上本地提交；只有在全部验证通过后才允许推送 `main`。
 - 默认发布到远程的含义是把已验证提交直接推送到 `origin/main`，触发 GitHub Actions 远程打包；只有版本号、标签和 release 条件明确时才创建 `v*` 标签触发 GitHub Release。
-- 日常演化只在 `main` 上操作，不配置额外分支、worktree 或日常 PR。
+- 日常演化固定在 `main` 完成，实现、验证、提交、推送都不离开主干。
 - 每轮工作都要更新 `WORKDOC.md`，按日期追加简短工作记录。
 - 保持项目约束：Go + Wails v2 后端，Vue 3 + TypeScript + Vite 前端，Git 操作通过系统 `git`，Windows 下 Git 子进程保持隐藏窗口启动。
 
@@ -58,7 +58,7 @@ RELEASE_MODE=main-direct
    - main-direct：直接提交到本地 `main`，推送到 `origin/main`；如果远程凭据缺失，保留本地提交并清楚记录阻塞原因。
    - tag-release：确认版本号，更新必要版本记录，提交，推送 `main`，创建并推送 `v*` 标签。
    - local-only：只保留本地提交或改动报告，不推送。
-8. 只按 `main-direct` 执行日常演化，不创建额外分支、worktree 或日常 PR。
+8. 只按 `main-direct` 执行日常演化，始终在当前 `main` 完成。
 9. 更新 WORKDOC.md，按日期追加简短工作记录。
 10. 最终输出：今日目标、改动摘要、验证结果、发布结果、后续建议。
 ```
@@ -165,13 +165,13 @@ RELEASE_MODE=main-direct
 - 提交信息使用：type(scope): summary。
 - 直接推送到 `origin/main`。
 - 推送后检查 GitHub Actions 的 macOS package workflow，确认远程打包是否已启动或完成。
-- 只使用 `main`，不创建日常分支或日常 PR。
+- 发布流程固定使用 `main`。
 - 如果当前不在 `main`，先回到 `main` 并确认工作区干净。
 
 正式 release 流程只在明确要求 RELEASE_MODE=tag-release 时执行：
 - 确认新版本号。
 - 更新版本记录和必要文档。
-- 合并或推送到 release 目标分支。
+- 推送已验证的 `main`。
 - 创建 v* 标签并推送。
 - 等待 GitHub Actions 生成 Release artifact，报告 workflow 结果。
 
@@ -203,7 +203,7 @@ RELEASE_MODE=main-direct
 - DATE=今天日期
 - RELEASE_MODE=main-direct
 
-所有实现都在当前本地 `main` 上完成；不要创建额外分支、worktree 或日常 PR。验证通过后提交到 `main`，推送 `origin/main`，由 GitHub Actions 触发远程 macOS 打包 workflow。不要在未明确 `tag-release` 模式时创建 `v*` 标签。
+所有实现都在当前本地 `main` 上完成；验证通过后提交到 `main`，推送 `origin/main`，由 GitHub Actions 触发远程 macOS 打包 workflow。不要在未明确 `tag-release` 模式时创建 `v*` 标签。
 
 执行要求：
 1. 先检查 `git status --short --branch`、最近提交、WORKDOC.md 今日记录和 GitHub Actions/发布状态。

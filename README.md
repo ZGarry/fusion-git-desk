@@ -67,6 +67,23 @@ wails build
 build/bin/FusionGitDesk.exe
 ```
 
+## 本地自动部署
+
+本地部署指在当前 Windows 机器生成可运行的桌面应用产物。脚本会依次运行前端构建、Go 测试和 Wails Windows 打包：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/deploy-local.ps1
+```
+
+启用本仓库的本地自动部署 hook 后，`main` 上的本地提交和 pull/merge 完成后会自动执行同一部署脚本：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/install-local-auto-deploy-hook.ps1
+```
+
+如需临时跳过某次本地自动部署，可在执行 Git 操作前设置 `FUSION_GIT_DESK_SKIP_LOCAL_DEPLOY=1`。
+如果修改了 Wails 绑定入口并需要刷新前端绑定文件，可手动运行 `scripts/deploy-local.ps1 -RegenerateBindings`。
+
 ## macOS 打包
 
 Wails v2 不能在 Windows 上交叉编译 macOS 应用。macOS 包需要在 Mac 或 GitHub Actions 的 macOS runner 上生成。
@@ -84,7 +101,7 @@ build/dist/FusionGitDesk-macos-universal.app.zip
 build/dist/FusionGitDesk-macos-universal.dmg
 ```
 
-也可以在 GitHub Actions 中手动触发 `Fusion Git Desk macOS Package` workflow，完成后从 artifact 下载 `.zip` 和 `.dmg`。
+推送 `origin/main` 会自动触发 `Fusion Git Desk macOS Package` workflow 并上传 `.zip` 和 `.dmg` artifact；推送 `v*` 标签时还会创建 GitHub Release。普通远程分支不会触发自动打包。也可以在 GitHub Actions 中手动触发该 workflow。
 
 ## 项目结构
 
@@ -95,6 +112,7 @@ build/dist/FusionGitDesk-macos-universal.dmg
 ├── settings.go               # 用户配置持久化
 ├── process_windows.go        # Windows 隐藏子进程窗口
 ├── frontend/                 # Vue 3 + Vite UI
+├── scripts/deploy-local.ps1  # 本地 Windows 部署脚本
 ├── scripts/build-macos.sh    # macOS app/dmg 打包脚本
 └── .github/workflows/        # macOS CI 打包 workflow
 ```

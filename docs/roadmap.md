@@ -1,6 +1,6 @@
 # Fusion Git Desk 下一步计划与优化清单
 
-状态日期：2026-06-05
+状态日期：2026-06-11
 
 本次发布版本：`v0.1.1`
 
@@ -10,6 +10,7 @@
 
 - [x] 输出下一步产品、工程和性能优化 Markdown 文档。
 - [x] 完善 GitHub Actions：推送 `main` 保持构建 artifact，推送 `v*` 标签时创建 GitHub Release 并上传 macOS 包。
+- [x] 增加本地自动部署脚本：在 Windows 本机串联前端构建、Go 测试和 Wails 打包，并可通过本地 Git hook 在 `main` 提交或更新后触发。
 - [x] 优化前端设置保存节奏，避免每次设置变化都立即写入后端。
 - [x] 优化前端 diff/branch 加载竞态，避免快速切换仓库或文件时旧请求覆盖新状态。
 - [x] 加强未跟踪文件 diff 预览的路径边界和符号链接处理。
@@ -38,6 +39,7 @@
 ## 工程优化事项
 
 - 发布流程：标签发布自动生成 GitHub Release，后续可继续加入 Windows 构建产物。
+- 本地部署流程：保持 `scripts/deploy-local.ps1` 可一键生成 Windows 桌面产物，hook 只在 `main` 上触发。
 - 质量门禁：保持 `pnpm build`、`go test ./...`、macOS 打包脚本在 CI 中串联执行。
 - 配置写入：前端做短 debounce，后端继续做 Normalize，避免高频写文件。
 - Git 命令边界：所有长耗时 Git 命令继续使用 timeout；Windows 子进程保持 hidden-window startup。
@@ -63,11 +65,12 @@
 
 - 本地前端验收：`cd frontend && pnpm build`
 - 本地 Go 验收：`go test ./...`
-- CI 验收：推送 `main` 后触发 macOS package workflow。
+- 本地部署验收：运行 `powershell -ExecutionPolicy Bypass -File scripts/deploy-local.ps1` 生成 `build/bin/FusionGitDesk.exe`。
+- CI 验收：推送 `main` 后触发 macOS package workflow；普通远程分支不触发自动打包。
 - Release 验收：推送 `v*` 标签后创建 GitHub Release，包含 `.zip` 和 `.dmg` 产物。
 
 ## 风险记录
 
-- 当前本机未检测到 Go 命令，Go 单元测试需要在已安装 Go 的环境或 GitHub Actions 中验证。
+- 当前 Windows 本机可运行 Go、pnpm 和 Wails，本地部署可以生成 Windows 产物。
 - macOS 包无法在 Windows 本机交叉构建，必须依赖 macOS runner 或 Mac 机器。
 - GitHub Release 创建依赖仓库 Actions 的 `GITHUB_TOKEN` 写权限，本轮已在 workflow 中声明 `contents: write`。
