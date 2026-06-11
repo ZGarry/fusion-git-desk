@@ -748,7 +748,9 @@ func parseStatus(output string) (RepoStatus, string, string, int, int) {
 		x := rune(line[0])
 		y := rune(line[1])
 		fileText := strings.TrimSpace(line[3:])
-		changedFile := ChangedFile{Path: fileText, Status: strings.TrimSpace(string([]rune{x, y})), Staged: x != ' ' && x != '?', Unstaged: y != ' ' && y != '?'}
+		statusCode := string([]rune{x, y})
+		unmerged := isUnmergedStatus(x, y)
+		changedFile := ChangedFile{Path: fileText, Status: strings.TrimSpace(statusCode), Staged: !unmerged && x != ' ' && x != '?', Unstaged: !unmerged && y != ' ' && y != '?'}
 		if strings.Contains(fileText, " -> ") {
 			parts := strings.SplitN(fileText, " -> ", 2)
 			changedFile.OldPath = parts[0]
@@ -801,6 +803,10 @@ func countStatus(status *RepoStatus, x rune, y rune) {
 		status.Untracked++
 		return
 	}
+	if isUnmergedStatus(x, y) {
+		status.Conflicted++
+		return
+	}
 	if x != ' ' && x != '?' {
 		status.Staged++
 	}
@@ -823,8 +829,15 @@ func countStatusCode(status *RepoStatus, code rune) {
 		status.Renamed++
 	case 'C':
 		status.Copied++
-	case 'U':
-		status.Conflicted++
+	}
+}
+
+func isUnmergedStatus(x rune, y rune) bool {
+	switch string([]rune{x, y}) {
+	case "DD", "AU", "UD", "UA", "DU", "AA", "UU":
+		return true
+	default:
+		return false
 	}
 }
 

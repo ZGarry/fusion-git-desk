@@ -37,6 +37,22 @@ func TestParseStatusReadsUpstreamAheadBehind(t *testing.T) {
 	}
 }
 
+func TestParseStatusCountsUnmergedConflictsOnce(t *testing.T) {
+	status, _, _, _, _ := parseStatus("## main\nUU both-modified.txt\nAA both-added.txt\nDD both-deleted.txt\nAU added-by-us.txt\nUD deleted-by-them.txt\n")
+
+	if status.Conflicted != 5 {
+		t.Fatalf("expected 5 conflicted files, got %d", status.Conflicted)
+	}
+	if status.Staged != 0 || status.Unstaged != 0 {
+		t.Fatalf("unmerged files should not count as staged or unstaged: %#v", status)
+	}
+	for _, file := range status.Files {
+		if file.Staged || file.Unstaged {
+			t.Fatalf("unmerged file should not enable staged flags: %#v", file)
+		}
+	}
+}
+
 func TestUntrackedDiffFileRendersTextPreview(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "notes.txt")
@@ -279,6 +295,35 @@ func TestCommitRepositoryRequiresStagedFiles(t *testing.T) {
 	}
 	if !strings.Contains(result.Message, "暂存") {
 		t.Fatalf("expected staged guidance, got %q", result.Message)
+	}
+}
+
+func TestCommitRepositoryRejectsBothAddedConflict(t *testing.T) {
+	root := initTestRepo(t)
+	commitTestFile(t, root, "README.md", "base\n", "initial commit")
+	runTestGit(t, root, "checkout", "-b", "feature")
+	commitTestFile(t, root, "conflict.txt", "feature\n", "feature adds conflict")
+	runTestGit(t, root, "checkout", "main")
+	commitTestFile(t, root, "conflict.txt", "main\n", "main adds conflict")
+	runTestGitExpectError(t, root, "merge", "feature")
+
+	_, status, err := NewGitService().repositoryStatus(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Conflicted != 1 {
+		t.Fatalf("expected add/add conflict to be detected once, got %#v", status)
+	}
+
+	result, err := NewGitService().CommitRepository(root, "commit conflicted state")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Success {
+		t.Fatalf("commit with unmerged files should not succeed: %#v", result)
+	}
+	if !strings.Contains(result.Message, "冲突") {
+		t.Fatalf("expected conflict guidance, got %q", result.Message)
 	}
 }
 
