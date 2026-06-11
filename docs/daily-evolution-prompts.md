@@ -192,18 +192,22 @@ RELEASE_MODE=main-direct
 6. 如果需要回滚，只给出候选命令，不要自动执行 destructive 命令，除非用户明确授权。
 ```
 
-## 推荐每小时执行提示词
+## Codex 自动化执行提示词
 
 ```text
+Automation: Fusion Git Desk 每日演化
+Automation ID: fusion-git-desk
+Automation memory: $CODEX_HOME/automations/fusion-git-desk/memory.md
+
 进入 E:\my\fusion-git-desk，阅读 AGENTS.md、README.md、WORKDOC.md、docs/requirements.md、docs/roadmap.md、docs/performance.md 和 docs/daily-evolution-prompts.md。
 
-按照 docs/daily-evolution-prompts.md 中的“总控提示词”执行一次持续演化检查。此提示词用于每小时自动触发，但目标按天收敛：每天最多主动完成一个小而完整的演化目标；如果当天已有未完成目标，则继续推进同一个目标；如果当天已有完成并推送的目标，且没有更严重的构建、测试、发布或 P0/P1 问题，则只做简短巡检报告，不要为了每小时触发而制造新改动。
+按照 docs/daily-evolution-prompts.md 中的“总控提示词”执行一次每日演化。目标按天收敛：每天最多主动完成一个小而完整的演化目标；如果当天已有未完成目标，则继续推进同一个目标；如果当天已有完成并推送的目标，且没有更严重的构建、测试、发布或 P0/P1 问题，则只做简短巡检报告，不要为了重复触发而制造新改动。
 
 本次使用：
 - DATE=今天日期
 - RELEASE_MODE=main-direct
 
-所有实现都在当前本地 `main` 上完成；验证通过后提交到 `main`，推送 `origin/main`，由 GitHub Actions 触发远程 macOS 打包 workflow。不要在未明确 `tag-release` 模式时创建 `v*` 标签。
+所有实现都在当前本地 `main` 上完成；不要创建功能分支、远程分支、worktree 或 PR。验证通过后提交到 `main`，直接推送 `origin/main`，由 GitHub Actions 触发远程 macOS 打包 workflow。不要在未明确 `tag-release` 模式时创建 `v*` 标签。
 
 执行要求：
 1. 先检查 `git status --short --branch`、最近提交、WORKDOC.md 今日记录和 GitHub Actions/发布状态。
@@ -214,15 +218,16 @@ RELEASE_MODE=main-direct
    - cd frontend && pnpm build
    - go test ./...
 6. 如果涉及桌面打包或发布链路，额外尝试 `wails build`；如果当前平台无法生成目标平台产物，说明限制和替代产物。
-7. 验证通过后提交并推送 `origin/main`；推送后检查 GitHub Actions 的 macOS package workflow 是否启动或完成。
-8. 如果缺少工具、凭据、网络或远程 API 受限，记录阻塞原因，并尽可能完成本地可验证部分。
+7. 验证通过后提交并直接推送 `origin/main`；推送后检查 GitHub Actions 的 macOS package workflow 是否启动或完成。
+8. 不创建日常 PR。即使 gh CLI 可用且已登录，也只用于查询 workflow 或发布状态。
+9. 如果缺少工具、凭据、网络或远程 API 受限，记录阻塞原因，并尽可能完成本地可验证部分。
 
 完成后必须输出：
 - 今日选择的目标和原因
 - 实现摘要
 - 运行过的验证命令和结果
 - WORKDOC.md 是否已更新
-- 是否已提交、是否已推送 `origin/main`、远程 workflow 状态
+- 是否已提交、是否已推送 `origin/main`、是否创建 PR（通常为否）、远程 workflow 状态
 - 下一次建议处理的事项
 ```
 
