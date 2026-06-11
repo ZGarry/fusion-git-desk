@@ -1,5 +1,10 @@
 # Fusion Git Desk 工作记录
 
+## 2026-06-11
+
+- 将 `daily-virtual-files-20260611` 的虚拟滚动提交快进合入 `main`，并准备删除已合入的本地/远程日常分支。
+- 清理每日演化提示词中的额外分支、worktree 和日常 PR 遗留描述，统一为直接在 `main` 上操作。
+
 ## 2026-06-10
 
 - 收拢 Codex worktree 改动到 `main`，后续默认主干开发、验证后直接推送 `origin/main` 并触发远程打包 workflow。

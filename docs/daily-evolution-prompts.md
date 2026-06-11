@@ -1,6 +1,6 @@
 # Fusion Git Desk 每日演化提示词
 
-状态日期：2026-06-10
+状态日期：2026-06-11
 
 本文档用于驱动 Fusion Git Desk 的持续演化工作流：每天巡检仓库、发现需求、选择一个可落地的小目标、实现、验证，并把通过验证的调整发布到远程。
 
@@ -10,7 +10,7 @@
 - 自动化可以提出需求和实现改动，但不能跳过质量门禁。
 - Git 写操作必须显式、可追踪、可回滚。默认直接在 `main` 上本地提交；只有在全部验证通过后才允许推送 `main`。
 - 默认发布到远程的含义是把已验证提交直接推送到 `origin/main`，触发 GitHub Actions 远程打包；只有版本号、标签和 release 条件明确时才创建 `v*` 标签触发 GitHub Release。
-- 日常演化不创建 `codex/daily-evolution-*` 分支，也不创建日常 PR；如果外部自动化仍传入 `BRANCH` 或 `RELEASE_MODE=branch-pr`，按 `RELEASE_MODE=main-direct` 处理，并在报告里提示配置需要更新。
+- 日常演化只在 `main` 上操作，不配置额外分支、worktree 或日常 PR。
 - 每轮工作都要更新 `WORKDOC.md`，按日期追加简短工作记录。
 - 保持项目约束：Go + Wails v2 后端，Vue 3 + TypeScript + Vite 前端，Git 操作通过系统 `git`，Windows 下 Git 子进程保持隐藏窗口启动。
 
@@ -26,11 +26,11 @@ RELEASE_MODE=main-direct
 
 `RELEASE_MODE` 建议取值：
 
-- `main-direct`：默认模式。直接在 `main` 上提交并推送到 `origin/main`，触发远程 macOS 打包 workflow，不创建日常功能分支或 PR。
+- `main-direct`：默认模式。直接在 `main` 上提交并推送到 `origin/main`，触发远程 macOS 打包 workflow。
 - `tag-release`：正式发布模式。所有验收通过后更新版本和 changelog，创建并推送 `v*` 标签。
 - `local-only`：只做本地改动和报告，不推送。
 
-不要为日常演化传入 `BRANCH`。历史遗留的 `BRANCH=codex/daily-evolution-YYYY-MM-DD` 或 `RELEASE_MODE=branch-pr` 都视为过期配置，执行时应改用 `main-direct`。
+日常演化统一使用 `main-direct`，直接在当前主干完成实现、验证和推送。
 
 ## 总控提示词
 
@@ -58,7 +58,7 @@ RELEASE_MODE=main-direct
    - main-direct：直接提交到本地 `main`，推送到 `origin/main`；如果远程凭据缺失，保留本地提交并清楚记录阻塞原因。
    - tag-release：确认版本号，更新必要版本记录，提交，推送 `main`，创建并推送 `v*` 标签。
    - local-only：只保留本地提交或改动报告，不推送。
-8. 如果提示或自动化配置里出现 `BRANCH=codex/daily-evolution-*` 或 `RELEASE_MODE=branch-pr`，不要创建分支或 PR；继续按 `main-direct` 执行，并把需要清理旧配置写入最终报告。
+8. 只按 `main-direct` 执行日常演化，不创建额外分支、worktree 或日常 PR。
 9. 更新 WORKDOC.md，按日期追加简短工作记录。
 10. 最终输出：今日目标、改动摘要、验证结果、发布结果、后续建议。
 ```
@@ -165,8 +165,8 @@ RELEASE_MODE=main-direct
 - 提交信息使用：type(scope): summary。
 - 直接推送到 `origin/main`。
 - 推送后检查 GitHub Actions 的 macOS package workflow，确认远程打包是否已启动或完成。
-- 不创建日常分支，不创建日常 PR。
-- 如果当前不在 `main`，先回到 `main` 并确认工作区干净；不要为了日常任务新建 `codex/daily-evolution-*` 分支。
+- 只使用 `main`，不创建日常分支或日常 PR。
+- 如果当前不在 `main`，先回到 `main` 并确认工作区干净。
 
 正式 release 流程只在明确要求 RELEASE_MODE=tag-release 时执行：
 - 确认新版本号。
@@ -203,7 +203,7 @@ RELEASE_MODE=main-direct
 - DATE=今天日期
 - RELEASE_MODE=main-direct
 
-不要传入 `BRANCH`，不要创建 `codex/daily-evolution-*` 日常分支，不要使用 Codex worktree，也不要为日常演化创建 PR。所有实现都在当前本地 `main` 上完成；验证通过后提交到 `main`，推送 `origin/main`，由 GitHub Actions 触发远程 macOS 打包 workflow。不要在未明确 `tag-release` 模式时创建 `v*` 标签。
+所有实现都在当前本地 `main` 上完成；不要创建额外分支、worktree 或日常 PR。验证通过后提交到 `main`，推送 `origin/main`，由 GitHub Actions 触发远程 macOS 打包 workflow。不要在未明确 `tag-release` 模式时创建 `v*` 标签。
 
 执行要求：
 1. 先检查 `git status --short --branch`、最近提交、WORKDOC.md 今日记录和 GitHub Actions/发布状态。
