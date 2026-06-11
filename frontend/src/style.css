@@ -822,6 +822,30 @@ textarea:focus {
   justify-content: stretch;
 }
 
+.file-list-viewport {
+  max-height: clamp(148px, 30vh, 340px);
+  overflow: auto;
+  border-top: 1px solid #edf0ed;
+}
+
+.file-list-spacer {
+  min-height: 100%;
+  position: relative;
+}
+
+.file-list-window {
+  position: absolute;
+  top: 0;
+  right: 0;
+  left: 0;
+  will-change: transform;
+}
+
+.virtual-file-list .file-row {
+  height: 34px;
+  min-height: 34px;
+}
+
 .file-row:hover:not(:disabled) {
   border-color: #d7dfd9;
   background: #f4faf6;

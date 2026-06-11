@@ -40,6 +40,11 @@ interface RepoAdvisory {
   detail: string
 }
 
+interface VirtualChangedFile {
+  file: ChangedFile
+  index: number
+}
+
 const settings = reactive<Settings>({
   lastRoot: '',
   maxDepth: 5,
@@ -73,6 +78,9 @@ const state = reactive({
 const rootInput = ref('')
 const repoFilter = ref('')
 const changedFileFilter = ref('')
+const changedFileListViewport = ref<HTMLElement | null>(null)
+const changedFileScrollTop = ref(0)
+const changedFileViewportHeight = ref(0)
 const commitMessage = ref('')
 const repositories = ref<Repository[]>([])
 const selectedPath = ref('')
@@ -82,7 +90,9 @@ const diff = ref<DiffResponse | null>(null)
 const branches = ref<BranchResponse | null>(null)
 const updateResults = ref<UpdateResult[]>([])
 
-const maxRenderedChangedFiles = 600
+const changedFileRowHeight = 34
+const changedFileOverscan = 6
+const changedFileDefaultViewportHeight = 240
 const maxRenderedDiffFiles = 80
 const maxRenderedDiffLines = 4000
 const autoCycleFailureWindowMs = 10 * 60 * 1000
@@ -91,6 +101,7 @@ let refreshTimer: number | undefined
 let settingsSaveTimer: number | undefined
 let diffRequestId = 0
 let branchesRequestId = 0
+let changedFileResizeObserver: ResizeObserver | undefined
 
 const filteredRepositories = computed(() => {
   const keyword = repoFilter.value.trim().toLowerCase()
@@ -174,8 +185,27 @@ const filteredSelectedFiles = computed(() => {
   if (!keyword) return selectedFiles.value
   return selectedFiles.value.filter((file) => `${file.status} ${file.path} ${file.oldPath ?? ''}`.toLowerCase().includes(keyword))
 })
-const renderedSelectedFiles = computed(() => filteredSelectedFiles.value.slice(0, maxRenderedChangedFiles))
-const hiddenSelectedFileCount = computed(() => Math.max(0, filteredSelectedFiles.value.length - renderedSelectedFiles.value.length))
+const changedFileVirtualRange = computed(() => {
+  const total = filteredSelectedFiles.value.length
+  if (!total) return { start: 0, end: 0 }
+
+  const viewportHeight = Math.max(changedFileViewportHeight.value, changedFileDefaultViewportHeight)
+  const visibleCount = Math.ceil(viewportHeight / changedFileRowHeight)
+  const maxStart = Math.max(0, total - visibleCount)
+  const rawStart = Math.floor(changedFileScrollTop.value / changedFileRowHeight) - changedFileOverscan
+  const start = Math.min(maxStart, Math.max(0, rawStart))
+  const end = Math.min(total, start + visibleCount + changedFileOverscan * 2)
+  return { start, end }
+})
+const renderedSelectedFiles = computed<VirtualChangedFile[]>(() => {
+  const { start, end } = changedFileVirtualRange.value
+  return filteredSelectedFiles.value.slice(start, end).map((file, offset) => ({
+    file,
+    index: start + offset,
+  }))
+})
+const changedFileVirtualHeight = computed(() => `${filteredSelectedFiles.value.length * changedFileRowHeight}px`)
+const changedFileVirtualOffset = computed(() => `translateY(${changedFileVirtualRange.value.start * changedFileRowHeight}px)`)
 const hiddenByFileFilterCount = computed(() => Math.max(0, selectedFiles.value.length - filteredSelectedFiles.value.length))
 const localBranches = computed(() => (branches.value?.branches ?? []).filter((branch) => !branch.remote))
 const remoteBranches = computed(() => (branches.value?.branches ?? []).filter((branch) => branch.remote))
@@ -197,6 +227,14 @@ const autoCycleSeverityClass = computed(() => {
 })
 
 onMounted(async () => {
+  if ('ResizeObserver' in window) {
+    changedFileResizeObserver = new ResizeObserver(updateChangedFileViewportHeight)
+    if (changedFileListViewport.value) {
+      changedFileResizeObserver.observe(changedFileListViewport.value)
+    }
+  }
+  updateChangedFileViewportHeight()
+
   try {
     const initial = await api.getInitialState()
     Object.assign(settings, normalizeSettings(initial.settings))
@@ -221,14 +259,30 @@ onBeforeUnmount(() => {
     window.clearTimeout(settingsSaveTimer)
     void api.saveSettings({ ...settings })
   }
+  changedFileResizeObserver?.disconnect()
 })
 
 watch(selectedPath, () => {
   selectedFilePath.value = ''
   changedFileFilter.value = ''
   commitMessage.value = ''
+  resetChangedFileVirtualScroll()
   void loadSelectedDetails()
 })
+
+watch(changedFileKeyword, () => {
+  resetChangedFileVirtualScroll()
+}, { flush: 'post' })
+
+watch(changedFileListViewport, (viewport, previousViewport) => {
+  if (previousViewport) {
+    changedFileResizeObserver?.unobserve(previousViewport)
+  }
+  if (viewport) {
+    changedFileResizeObserver?.observe(viewport)
+    updateChangedFileViewportHeight()
+  }
+}, { flush: 'post' })
 
 watch(activeDiffMode, () => {
   void loadDiff()
@@ -686,6 +740,24 @@ function selectChangedFile(file: ChangedFile) {
 function clearSelectedFile() {
   selectedFilePath.value = ''
   void loadDiff()
+}
+
+function updateChangedFileViewportHeight() {
+  changedFileViewportHeight.value = changedFileListViewport.value?.clientHeight ?? 0
+}
+
+function onChangedFileScroll(event: Event) {
+  const viewport = event.currentTarget as HTMLElement
+  changedFileScrollTop.value = viewport.scrollTop
+  changedFileViewportHeight.value = viewport.clientHeight
+}
+
+function resetChangedFileVirtualScroll() {
+  changedFileScrollTop.value = 0
+  if (changedFileListViewport.value) {
+    changedFileListViewport.value.scrollTop = 0
+    updateChangedFileViewportHeight()
+  }
 }
 
 function changedCount(repo: Repository) {
@@ -1333,22 +1405,25 @@ function messageOf(error: unknown) {
               <input v-model="changedFileFilter" type="search" placeholder="过滤文件" />
             </div>
             <div v-if="!filteredSelectedFiles.length" class="empty compact">无匹配文件</div>
-            <div v-else class="file-list">
-              <button
-                v-for="file in renderedSelectedFiles"
-                :key="`${file.status}-${file.path}`"
-                class="file-row"
-                :class="{ active: file.path === selectedFilePath }"
-                @click="selectChangedFile(file)"
-              >
-                <span class="file-status" :class="{ staged: file.staged }">{{ file.status }}</span>
-                <span class="file-name">{{ file.path }}</span>
-              </button>
+            <div v-else class="file-list virtual-file-list">
+              <div ref="changedFileListViewport" class="file-list-viewport" @scroll="onChangedFileScroll">
+                <div class="file-list-spacer" :style="{ height: changedFileVirtualHeight }">
+                  <div class="file-list-window" :style="{ transform: changedFileVirtualOffset }">
+                    <button
+                      v-for="item in renderedSelectedFiles"
+                      :key="`${item.file.status}-${item.file.path}-${item.index}`"
+                      class="file-row"
+                      :class="{ active: item.file.path === selectedFilePath }"
+                      @click="selectChangedFile(item.file)"
+                    >
+                      <span class="file-status" :class="{ staged: item.file.staged }">{{ item.file.status }}</span>
+                      <span class="file-name">{{ item.file.path }}</span>
+                    </button>
+                  </div>
+                </div>
+              </div>
               <div v-if="hiddenByFileFilterCount" class="list-limit-note">
                 已过滤 {{ hiddenByFileFilterCount }} 个变更文件。
-              </div>
-              <div v-if="hiddenSelectedFileCount" class="list-limit-note">
-                还有 {{ hiddenSelectedFileCount }} 个匹配文件未渲染。
               </div>
             </div>
           </div>
