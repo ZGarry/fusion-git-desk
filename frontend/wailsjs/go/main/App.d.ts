@@ -4,26 +4,22 @@ import {main} from '../models';
 
 export function CheckoutBranch(arg1:string,arg2:string):Promise<main.CommandResult>;
 
-export function CommitRepository(arg1:string,arg2:string):Promise<main.CommandResult>;
+export function CheckoutRemoteBranch(arg1:string,arg2:string):Promise<main.CommandResult>;
 
 export function GetBranches(arg1:string):Promise<main.BranchResponse>;
 
 export function GetInitialState():Promise<main.InitialState>;
 
-export function GetRepositoryDiff(arg1:string,arg2:string):Promise<main.DiffResponse>;
-
-export function GetRepositoryFileDiff(arg1:string,arg2:string,arg3:string):Promise<main.DiffResponse>;
+export function OpenRepository(arg1:string,arg2:string):Promise<main.CommandResult>;
 
 export function PickDirectory():Promise<string>;
+
+export function PickIdeaExecutable():Promise<string>;
 
 export function RefreshRepository(arg1:string):Promise<main.Repository>;
 
 export function SaveSettings(arg1:main.Settings):Promise<void>;
 
 export function ScanRepositories(arg1:string,arg2:number):Promise<main.ScanResponse>;
-
-export function StageFile(arg1:string,arg2:string):Promise<main.CommandResult>;
-
-export function UnstageFile(arg1:string,arg2:string):Promise<main.CommandResult>;
 
 export function UpdateRepositories(arg1:main.UpdateRequest):Promise<Array<main.UpdateResult>>;

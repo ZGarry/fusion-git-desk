@@ -25,6 +25,7 @@ type Settings struct {
 	AutoFetch              bool   `json:"autoFetch"`
 	AutoPullCleanRepos     bool   `json:"autoPullCleanRepos"`
 	OnlyPullCleanRepos     bool   `json:"onlyPullCleanRepos"`
+	IdeaPath               string `json:"ideaPath"`
 	DiffDisplayByteLimit   int    `json:"diffDisplayByteLimit"`
 }
 

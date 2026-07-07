@@ -6,8 +6,8 @@ export function CheckoutBranch(arg1, arg2) {
   return window['go']['main']['App']['CheckoutBranch'](arg1, arg2);
 }
 
-export function CommitRepository(arg1, arg2) {
-  return window['go']['main']['App']['CommitRepository'](arg1, arg2);
+export function CheckoutRemoteBranch(arg1, arg2) {
+  return window['go']['main']['App']['CheckoutRemoteBranch'](arg1, arg2);
 }
 
 export function GetBranches(arg1) {
@@ -18,16 +18,16 @@ export function GetInitialState() {
   return window['go']['main']['App']['GetInitialState']();
 }
 
-export function GetRepositoryDiff(arg1, arg2) {
-  return window['go']['main']['App']['GetRepositoryDiff'](arg1, arg2);
-}
-
-export function GetRepositoryFileDiff(arg1, arg2, arg3) {
-  return window['go']['main']['App']['GetRepositoryFileDiff'](arg1, arg2, arg3);
+export function OpenRepository(arg1, arg2) {
+  return window['go']['main']['App']['OpenRepository'](arg1, arg2);
 }
 
 export function PickDirectory() {
   return window['go']['main']['App']['PickDirectory']();
+}
+
+export function PickIdeaExecutable() {
+  return window['go']['main']['App']['PickIdeaExecutable']();
 }
 
 export function RefreshRepository(arg1) {
@@ -40,14 +40,6 @@ export function SaveSettings(arg1) {
 
 export function ScanRepositories(arg1, arg2) {
   return window['go']['main']['App']['ScanRepositories'](arg1, arg2);
-}
-
-export function StageFile(arg1, arg2) {
-  return window['go']['main']['App']['StageFile'](arg1, arg2);
-}
-
-export function UnstageFile(arg1, arg2) {
-  return window['go']['main']['App']['UnstageFile'](arg1, arg2);
 }
 
 export function UpdateRepositories(arg1) {

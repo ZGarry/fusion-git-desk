@@ -4,6 +4,7 @@ export namespace main {
 	    name: string;
 	    current: boolean;
 	    remote: boolean;
+	    default: boolean;
 	    upstream: string;
 	    commit: string;
 	    relativeTime: string;
@@ -18,6 +19,7 @@ export namespace main {
 	        this.name = source["name"];
 	        this.current = source["current"];
 	        this.remote = source["remote"];
+	        this.default = source["default"];
 	        this.upstream = source["upstream"];
 	        this.commit = source["commit"];
 	        this.relativeTime = source["relativeTime"];
@@ -122,111 +124,6 @@ export namespace main {
 	        this.subject = source["subject"];
 	    }
 	}
-	export class DiffLine {
-	    kind: string;
-	    content: string;
-	    oldLine: number;
-	    newLine: number;
-	
-	    static createFrom(source: any = {}) {
-	        return new DiffLine(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.kind = source["kind"];
-	        this.content = source["content"];
-	        this.oldLine = source["oldLine"];
-	        this.newLine = source["newLine"];
-	    }
-	}
-	export class DiffFile {
-	    oldPath: string;
-	    newPath: string;
-	    status: string;
-	    additions: number;
-	    deletions: number;
-	    lines: DiffLine[];
-	
-	    static createFrom(source: any = {}) {
-	        return new DiffFile(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.oldPath = source["oldPath"];
-	        this.newPath = source["newPath"];
-	        this.status = source["status"];
-	        this.additions = source["additions"];
-	        this.deletions = source["deletions"];
-	        this.lines = this.convertValues(source["lines"], DiffLine);
-	    }
-	
-		convertValues(a: any, classs: any, asMap: boolean = false): any {
-		    if (!a) {
-		        return a;
-		    }
-		    if (a.slice && a.map) {
-		        return (a as any[]).map(elem => this.convertValues(elem, classs));
-		    } else if ("object" === typeof a) {
-		        if (asMap) {
-		            for (const key of Object.keys(a)) {
-		                a[key] = new classs(a[key]);
-		            }
-		            return a;
-		        }
-		        return new classs(a);
-		    }
-		    return a;
-		}
-	}
-	
-	export class DiffResponse {
-	    path: string;
-	    mode: string;
-	    target?: string;
-	    files: DiffFile[];
-	    raw: string;
-	    truncated: boolean;
-	    generated: string;
-	    note?: string;
-	    error?: string;
-	
-	    static createFrom(source: any = {}) {
-	        return new DiffResponse(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.path = source["path"];
-	        this.mode = source["mode"];
-	        this.target = source["target"];
-	        this.files = this.convertValues(source["files"], DiffFile);
-	        this.raw = source["raw"];
-	        this.truncated = source["truncated"];
-	        this.generated = source["generated"];
-	        this.note = source["note"];
-	        this.error = source["error"];
-	    }
-	
-		convertValues(a: any, classs: any, asMap: boolean = false): any {
-		    if (!a) {
-		        return a;
-		    }
-		    if (a.slice && a.map) {
-		        return (a as any[]).map(elem => this.convertValues(elem, classs));
-		    } else if ("object" === typeof a) {
-		        if (asMap) {
-		            for (const key of Object.keys(a)) {
-		                a[key] = new classs(a[key]);
-		            }
-		            return a;
-		        }
-		        return new classs(a);
-		    }
-		    return a;
-		}
-	}
 	export class Settings {
 	    lastRoot: string;
 	    maxDepth: number;
@@ -235,6 +132,7 @@ export namespace main {
 	    autoFetch: boolean;
 	    autoPullCleanRepos: boolean;
 	    onlyPullCleanRepos: boolean;
+	    ideaPath: string;
 	    diffDisplayByteLimit: number;
 	
 	    static createFrom(source: any = {}) {
@@ -250,6 +148,7 @@ export namespace main {
 	        this.autoFetch = source["autoFetch"];
 	        this.autoPullCleanRepos = source["autoPullCleanRepos"];
 	        this.onlyPullCleanRepos = source["onlyPullCleanRepos"];
+	        this.ideaPath = source["ideaPath"];
 	        this.diffDisplayByteLimit = source["diffDisplayByteLimit"];
 	    }
 	}
@@ -360,7 +259,9 @@ export namespace main {
 	    branch: string;
 	    head: string;
 	    upstream: string;
+	    remoteName: string;
 	    remoteUrl: string;
+	    hasRemote: boolean;
 	    hasUpstream: boolean;
 	    isClean: boolean;
 	    ahead: number;
@@ -383,7 +284,9 @@ export namespace main {
 	        this.branch = source["branch"];
 	        this.head = source["head"];
 	        this.upstream = source["upstream"];
+	        this.remoteName = source["remoteName"];
 	        this.remoteUrl = source["remoteUrl"];
+	        this.hasRemote = source["hasRemote"];
 	        this.hasUpstream = source["hasUpstream"];
 	        this.isClean = source["isClean"];
 	        this.ahead = source["ahead"];
@@ -418,6 +321,7 @@ export namespace main {
 	    maxDepth: number;
 	    repositories: Repository[];
 	    scannedAt: string;
+	    warnings?: string[];
 	    error?: string;
 	
 	    static createFrom(source: any = {}) {
@@ -430,6 +334,7 @@ export namespace main {
 	        this.maxDepth = source["maxDepth"];
 	        this.repositories = this.convertValues(source["repositories"], Repository);
 	        this.scannedAt = source["scannedAt"];
+	        this.warnings = source["warnings"];
 	        this.error = source["error"];
 	    }
 	

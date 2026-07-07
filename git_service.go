@@ -41,6 +41,7 @@ type ScanResponse struct {
 	MaxDepth     int          `json:"maxDepth"`
 	Repositories []Repository `json:"repositories"`
 	ScannedAt    string       `json:"scannedAt"`
+	Warnings     []string     `json:"warnings,omitempty"`
 	Error        string       `json:"error,omitempty"`
 }
 
@@ -51,7 +52,9 @@ type Repository struct {
 	Branch      string      `json:"branch"`
 	Head        string      `json:"head"`
 	Upstream    string      `json:"upstream"`
+	RemoteName  string      `json:"remoteName"`
 	RemoteURL   string      `json:"remoteUrl"`
+	HasRemote   bool        `json:"hasRemote"`
 	HasUpstream bool        `json:"hasUpstream"`
 	IsClean     bool        `json:"isClean"`
 	Ahead       int         `json:"ahead"`
@@ -110,6 +113,7 @@ type BranchInfo struct {
 	Name         string `json:"name"`
 	Current      bool   `json:"current"`
 	Remote       bool   `json:"remote"`
+	Default      bool   `json:"default"`
 	Upstream     string `json:"upstream"`
 	Commit       string `json:"commit"`
 	RelativeTime string `json:"relativeTime"`
@@ -174,6 +178,13 @@ type CommandResult struct {
 	FinishedAt string `json:"finishedAt"`
 }
 
+type editorLaunchCommand struct {
+	Label      string
+	Executable string
+	Args       []string
+	HideWindow bool
+}
+
 func NewGitService() *GitService {
 	return &GitService{
 		commandTimeout: time.Duration(DefaultGitCommandTimeoutMillis) * time.Millisecond,
@@ -186,26 +197,42 @@ func (g *GitService) HasGit() bool {
 	return err == nil
 }
 
-func (g *GitService) Scan(root string, maxDepth int) ([]Repository, error) {
+type walkDirFunc func(root string, fn fs.WalkDirFunc) error
+
+func (g *GitService) Scan(root string, maxDepth int) ([]Repository, []string, error) {
 	if !g.HasGit() {
-		return nil, errors.New("git executable was not found in PATH")
+		return nil, nil, errors.New("git executable was not found in PATH")
 	}
 	root, err := filepath.Abs(root)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	info, err := os.Stat(root)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if !info.IsDir() {
-		return nil, fmt.Errorf("%s is not a directory", root)
+		return nil, nil, fmt.Errorf("%s is not a directory", root)
 	}
 
+	repoPaths, warnings, err := scanRepoPaths(root, maxDepth, filepath.WalkDir)
+	repositories := g.inspectRepositories(repoPaths)
+	sort.Slice(repositories, func(i, j int) bool {
+		return strings.ToLower(repositories[i].Path) < strings.ToLower(repositories[j].Path)
+	})
+	return repositories, warnings, err
+}
+
+func scanRepoPaths(root string, maxDepth int, walkDir walkDirFunc) ([]string, []string, error) {
 	found := make(map[string]struct{})
 	repoPaths := make([]string, 0)
-	err = filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
-		if walkErr != nil || !entry.IsDir() {
+	warnings := make([]string, 0)
+	err := walkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			warnings = append(warnings, formatScanWarning(path, walkErr))
+			return nil
+		}
+		if entry == nil || !entry.IsDir() {
 			return nil
 		}
 		if path != root && shouldSkipDirectory(entry.Name()) {
@@ -228,12 +255,14 @@ func (g *GitService) Scan(root string, maxDepth int) ([]Repository, error) {
 		}
 		return filepath.SkipDir
 	})
+	return repoPaths, warnings, err
+}
 
-	repositories := g.inspectRepositories(repoPaths)
-	sort.Slice(repositories, func(i, j int) bool {
-		return strings.ToLower(repositories[i].Path) < strings.ToLower(repositories[j].Path)
-	})
-	return repositories, err
+func formatScanWarning(path string, err error) string {
+	if strings.TrimSpace(path) == "" {
+		return err.Error()
+	}
+	return fmt.Sprintf("%s: %s", filepath.Clean(path), err)
 }
 
 func (g *GitService) inspectRepositories(paths []string) []Repository {
@@ -321,7 +350,7 @@ func (g *GitService) Inspect(path string) (Repository, error) {
 	if branch == "" {
 		branch = "HEAD detached"
 	}
-	remoteURL, _, _, remoteElapsed := g.runTimedGit(path, g.commandTimeout, "remote", "get-url", "origin")
+	remoteName, remoteURL, hasRemote, remoteElapsed := g.remoteSummary(path)
 	timings.RemoteMs = remoteElapsed
 	lastCommit, lastCommitElapsed := g.lastCommitTimed(path)
 	timings.LastCommitMs = lastCommitElapsed
@@ -334,7 +363,9 @@ func (g *GitService) Inspect(path string) (Repository, error) {
 		Branch:      branch,
 		Head:        head,
 		Upstream:    strings.TrimSpace(upstream),
-		RemoteURL:   strings.TrimSpace(remoteURL),
+		RemoteName:  remoteName,
+		RemoteURL:   remoteURL,
+		HasRemote:   hasRemote,
 		HasUpstream: strings.TrimSpace(upstream) != "",
 		IsClean:     len(status.Files) == 0,
 		Ahead:       ahead,
@@ -379,7 +410,7 @@ func (g *GitService) Branches(path string) (BranchResponse, error) {
 	if err != nil {
 		return BranchResponse{}, err
 	}
-	output, stderr, err := g.runGit(repoPath, g.commandTimeout, "for-each-ref", "--format=%(refname)%00%(refname:short)%00%(HEAD)%00%(upstream:short)%00%(objectname:short)%00%(committerdate:relative)%00%(contents:subject)", "refs/heads", "refs/remotes")
+	output, stderr, err := g.runGit(repoPath, g.commandTimeout, "for-each-ref", "--format=%(refname)%00%(refname:short)%00%(HEAD)%00%(upstream:short)%00%(objectname:short)%00%(committerdate:relative)%00%(contents:subject)%00%(symref:short)", "refs/heads", "refs/remotes")
 	if err != nil {
 		return BranchResponse{}, fmt.Errorf("git branches failed: %s", firstNonEmpty(stderr, err.Error()))
 	}
@@ -390,6 +421,9 @@ func (g *GitService) Branches(path string) (BranchResponse, error) {
 		}
 		if branches[i].Remote != branches[j].Remote {
 			return !branches[i].Remote
+		}
+		if branches[i].Default != branches[j].Default {
+			return branches[i].Default
 		}
 		return strings.ToLower(branches[i].Name) < strings.ToLower(branches[j].Name)
 	})
@@ -412,7 +446,113 @@ func (g *GitService) CheckoutBranch(path string, branch string) (CommandResult, 
 		result.Message = firstNonEmpty(stderr, err.Error())
 		return result, nil
 	}
-	result.Message = firstNonEmpty(stdout, stderr, "branch checked out")
+	result.Message = firstNonEmpty(stdout, stderr, "已切换分支")
+	return result, nil
+}
+
+func (g *GitService) CheckoutRemoteBranch(path string, branch string) (CommandResult, error) {
+	branch = strings.TrimSpace(branch)
+	if branch == "" {
+		return CommandResult{}, errors.New("remote branch is required")
+	}
+	repoPath, err := g.resolveRepoPath(path)
+	if err != nil {
+		return CommandResult{}, err
+	}
+	result := CommandResult{Path: repoPath, FinishedAt: nowISO()}
+	remoteName, branchName, err := g.remoteBranchParts(repoPath, branch)
+	if err != nil {
+		result.Message = err.Error()
+		return result, nil
+	}
+	remoteBranch := remoteName + "/" + branchName
+	if shouldIgnoreRemoteBranch(remoteBranch) {
+		result.Message = "ai-review 远端分支已被自动忽略"
+		return result, nil
+	}
+
+	fetchRefspec := fmt.Sprintf("+refs/heads/%s:refs/remotes/%s/%s", branchName, remoteName, branchName)
+	fetchArgs := []string{"fetch", "--prune", remoteName, fetchRefspec}
+	fetchStdout, fetchStderr, fetchErr := g.runGit(repoPath, 4*g.commandTimeout, fetchArgs...)
+	result.Command = "git " + strings.Join(fetchArgs, " ")
+	result.Stdout = fetchStdout
+	result.Stderr = fetchStderr
+	if fetchErr != nil {
+		result.Message = firstNonEmpty(fetchStderr, fetchErr.Error())
+		return result, nil
+	}
+	g.updateRemoteHeadReference(repoPath, remoteName)
+
+	localExists := g.localBranchExists(repoPath, branchName)
+	checkoutArgs := []string{"checkout", "--track", "-b", branchName, remoteBranch}
+	if localExists {
+		checkoutArgs = []string{"checkout", branchName}
+	}
+	checkoutStdout, checkoutStderr, checkoutErr := g.runGit(repoPath, 2*g.commandTimeout, checkoutArgs...)
+	result.Command += " && git " + strings.Join(checkoutArgs, " ")
+	result.Stdout = joinCommandOutput(result.Stdout, checkoutStdout)
+	result.Stderr = joinCommandOutput(result.Stderr, checkoutStderr)
+	if checkoutErr != nil {
+		result.Message = firstNonEmpty(checkoutStderr, checkoutErr.Error())
+		return result, nil
+	}
+
+	if localExists {
+		if !g.currentBranchHasUpstream(repoPath) {
+			setUpstreamArgs := []string{"branch", "--set-upstream-to", remoteBranch, branchName}
+			setStdout, setStderr, setErr := g.runGit(repoPath, g.commandTimeout, setUpstreamArgs...)
+			result.Command += " && git " + strings.Join(setUpstreamArgs, " ")
+			result.Stdout = joinCommandOutput(result.Stdout, setStdout)
+			result.Stderr = joinCommandOutput(result.Stderr, setStderr)
+			if setErr != nil {
+				result.Message = firstNonEmpty(setStderr, setErr.Error())
+				return result, nil
+			}
+		}
+		mergeArgs := []string{"merge", "--ff-only", remoteBranch}
+		mergeStdout, mergeStderr, mergeErr := g.runGit(repoPath, 2*g.commandTimeout, mergeArgs...)
+		result.Command += " && git " + strings.Join(mergeArgs, " ")
+		result.Stdout = joinCommandOutput(result.Stdout, mergeStdout)
+		result.Stderr = joinCommandOutput(result.Stderr, mergeStderr)
+		if mergeErr != nil {
+			result.Message = firstNonEmpty(mergeStderr, mergeErr.Error())
+			return result, nil
+		}
+	}
+
+	result.Success = true
+	result.FinishedAt = nowISO()
+	result.Message = fmt.Sprintf("已拉取并切换到 %s", branchName)
+	return result, nil
+}
+
+func (g *GitService) OpenRepository(path string, editor string, configuredExecutable string) (CommandResult, error) {
+	repoPath, err := g.resolveRepoPath(path)
+	if err != nil {
+		return CommandResult{}, err
+	}
+	result := CommandResult{Path: repoPath, FinishedAt: nowISO()}
+	launch, err := resolveEditorLaunchCommand(editor, repoPath, configuredExecutable)
+	if err != nil {
+		result.Message = err.Error()
+		return result, nil
+	}
+	cmd := exec.Command(launch.Executable, launch.Args...)
+	if launch.HideWindow {
+		configureHiddenCommand(cmd)
+	}
+	cmd.Dir = repoPath
+	result.Command = launch.Label
+	startErr := cmd.Start()
+	result.Success = startErr == nil
+	if startErr != nil {
+		result.Message = fmt.Sprintf("无法启动 %s：%s", launch.Label, startErr.Error())
+		return result, nil
+	}
+	if cmd.Process != nil {
+		_ = cmd.Process.Release()
+	}
+	result.Message = fmt.Sprintf("已用 %s 打开 %s", launch.Label, repoPath)
 	return result, nil
 }
 
@@ -627,17 +767,17 @@ func (g *GitService) updateRepository(path string, mode string, onlyClean bool, 
 	result.Before = &beforeCopy
 	if mode == "pull" && before.Status.Conflicted > 0 {
 		result.Skipped = true
-		result.Message = "工作区存在冲突，已跳过 Pull；请先解决冲突并刷新仓库"
+		result.Message = "工作区存在冲突，已跳过拉取；请先解决冲突并刷新仓库"
 		return result
 	}
 	if mode == "pull" && !before.HasUpstream {
 		result.Skipped = true
-		result.Message = "当前分支没有 upstream，已跳过 Pull；请先设置跟踪分支或从远端分支创建本地分支"
+		result.Message = "当前分支未设置上游分支，已跳过拉取；请先设置跟踪分支或从远端分支创建本地分支"
 		return result
 	}
 	if onlyClean && !before.IsClean {
 		result.Skipped = true
-		result.Message = "工作区有本地改动，已按仅干净仓库 Pull 策略跳过"
+		result.Message = "工作区有本地改动，已按保护策略跳过拉取"
 		return result
 	}
 	stdout, stderr, err := g.runGit(before.Path, 4*g.commandTimeout, updateArgs(mode, prune)...)
@@ -647,7 +787,8 @@ func (g *GitService) updateRepository(path string, mode string, onlyClean bool, 
 	if err != nil {
 		result.Message = firstNonEmpty(stderr, err.Error())
 	} else {
-		result.Message = firstNonEmpty(stdout, stderr, "up to date")
+		result.Message = firstNonEmpty(stdout, stderr, "已经是最新状态")
+		g.updateRemoteHeadReferences(before.Path)
 	}
 	after, inspectErr := g.Inspect(before.Path)
 	if inspectErr == nil {
@@ -656,6 +797,78 @@ func (g *GitService) updateRepository(path string, mode string, onlyClean bool, 
 	}
 	result.FinishedAt = nowISO()
 	return result
+}
+
+func (g *GitService) remoteSummary(path string) (string, string, bool, int64) {
+	started := time.Now()
+	remotes := g.remoteNames(path)
+	if len(remotes) == 0 {
+		return "", "", false, elapsedMillis(started)
+	}
+
+	remoteName := remotes[0]
+	for _, name := range remotes {
+		if name == "origin" {
+			remoteName = name
+			break
+		}
+	}
+	remoteURL, _, urlErr := g.runGit(path, g.commandTimeout, "remote", "get-url", remoteName)
+	if urlErr != nil {
+		return remoteName, "", true, elapsedMillis(started)
+	}
+	return remoteName, strings.TrimSpace(remoteURL), true, elapsedMillis(started)
+}
+
+func (g *GitService) remoteNames(path string) []string {
+	output, _, err := g.runGit(path, g.commandTimeout, "remote")
+	if err != nil {
+		return nil
+	}
+	return uniqueStrings(splitLines(output))
+}
+
+func (g *GitService) updateRemoteHeadReferences(path string) {
+	for _, remote := range g.remoteNames(path) {
+		g.updateRemoteHeadReference(path, remote)
+	}
+}
+
+func (g *GitService) updateRemoteHeadReference(path string, remote string) {
+	remote = strings.TrimSpace(remote)
+	if remote == "" {
+		return
+	}
+	_, _, _ = g.runGit(path, g.commandTimeout, "remote", "set-head", remote, "--auto")
+}
+
+func (g *GitService) remoteBranchParts(repoPath string, branch string) (string, string, error) {
+	branch = strings.TrimPrefix(strings.TrimSpace(branch), "refs/remotes/")
+	for _, remote := range g.remoteNames(repoPath) {
+		prefix := remote + "/"
+		if !strings.HasPrefix(branch, prefix) {
+			continue
+		}
+		name := strings.TrimSpace(strings.TrimPrefix(branch, prefix))
+		if name == "" || name == "HEAD" {
+			return "", "", fmt.Errorf("不能切换远端 HEAD 引用：%s", branch)
+		}
+		if _, stderr, err := g.runGit(repoPath, g.commandTimeout, "check-ref-format", "--branch", name); err != nil {
+			return "", "", fmt.Errorf("远端分支名称无效：%s", firstNonEmpty(stderr, err.Error()))
+		}
+		return remote, name, nil
+	}
+	return "", "", fmt.Errorf("未识别远端分支：%s", branch)
+}
+
+func (g *GitService) localBranchExists(repoPath string, branch string) bool {
+	_, _, err := g.runGit(repoPath, g.commandTimeout, "show-ref", "--verify", "--quiet", "refs/heads/"+branch)
+	return err == nil
+}
+
+func (g *GitService) currentBranchHasUpstream(repoPath string) bool {
+	output, _, err := g.runGit(repoPath, g.commandTimeout, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}")
+	return err == nil && strings.TrimSpace(output) != ""
 }
 
 func (g *GitService) lastCommit(path string) CommitInfo {
@@ -844,20 +1057,30 @@ func isUnmergedStatus(x rune, y rune) bool {
 func parseBranchRefs(output string) ([]BranchInfo, string) {
 	branches := make([]BranchInfo, 0)
 	current := ""
+	defaultBranches := make(map[string]struct{})
 	for _, line := range splitLines(output) {
 		if strings.TrimSpace(line) == "" {
 			continue
 		}
-		parts := strings.SplitN(line, "\x00", 7)
-		for len(parts) < 7 {
+		parts := strings.SplitN(line, "\x00", 8)
+		for len(parts) < 8 {
 			parts = append(parts, "")
 		}
 		refName := strings.TrimSpace(parts[0])
 		shortName := strings.TrimSpace(parts[1])
-		if refName == "" || shortName == "" || strings.HasSuffix(shortName, "/HEAD") {
+		if refName == "" || shortName == "" {
 			continue
 		}
 		isRemote := strings.HasPrefix(refName, "refs/remotes/")
+		if isRemote && strings.HasSuffix(shortName, "/HEAD") {
+			if target := strings.TrimSpace(parts[7]); target != "" {
+				defaultBranches[target] = struct{}{}
+			}
+			continue
+		}
+		if isRemote && shouldIgnoreRemoteBranch(shortName) {
+			continue
+		}
 		isCurrent := !isRemote && strings.TrimSpace(parts[2]) == "*"
 		if isCurrent {
 			current = shortName
@@ -872,7 +1095,22 @@ func parseBranchRefs(output string) ([]BranchInfo, string) {
 			Subject:      strings.TrimSpace(parts[6]),
 		})
 	}
+	for i := range branches {
+		if _, ok := defaultBranches[branches[i].Name]; ok {
+			branches[i].Default = true
+		}
+	}
 	return branches, current
+}
+
+func shouldIgnoreRemoteBranch(name string) bool {
+	name = strings.TrimPrefix(strings.TrimSpace(name), "refs/remotes/")
+	slash := strings.Index(name, "/")
+	if slash < 0 || slash == len(name)-1 {
+		return false
+	}
+	branchName := name[slash+1:]
+	return branchName == "ai-review" || strings.HasPrefix(branchName, "ai-review/")
 }
 
 func findChangedFile(files []ChangedFile, path string) *ChangedFile {
@@ -1078,6 +1316,121 @@ func normalizeUpdateMode(mode string) string {
 	return "fetch"
 }
 
+func resolveEditorLaunchCommand(editor string, repoPath string, configuredExecutable string) (editorLaunchCommand, error) {
+	editor = strings.ToLower(strings.TrimSpace(editor))
+	var label string
+	var candidates []string
+	switch editor {
+	case "vscode", "code":
+		label = "VS Code"
+		candidates = editorCandidates("vscode")
+	case "idea", "intellij":
+		label = "IDEA"
+		candidates = editorCandidates("idea")
+	default:
+		return editorLaunchCommand{}, fmt.Errorf("不支持的编辑器：%s", editor)
+	}
+	candidates = prependConfiguredEditorCandidate(configuredExecutable, candidates)
+
+	executable, err := findFirstExecutable(candidates)
+	if err != nil {
+		return editorLaunchCommand{}, fmt.Errorf("未找到 %s，请先安装或把启动命令加入 PATH", label)
+	}
+	args := []string{repoPath}
+	if runtime.GOOS == "windows" && isWindowsCommandScript(executable) {
+		comspec := os.Getenv("COMSPEC")
+		if strings.TrimSpace(comspec) == "" {
+			comspec = "cmd.exe"
+		}
+		return editorLaunchCommand{Label: label, Executable: comspec, Args: []string{"/C", "start", "", executable, repoPath}, HideWindow: true}, nil
+	}
+	return editorLaunchCommand{Label: label, Executable: executable, Args: args}, nil
+}
+
+func prependConfiguredEditorCandidate(configured string, candidates []string) []string {
+	configured = strings.Trim(strings.TrimSpace(configured), `"'`)
+	if configured == "" {
+		return candidates
+	}
+	return append([]string{configured}, candidates...)
+}
+
+func editorCandidates(editor string) []string {
+	switch editor {
+	case "vscode":
+		candidates := []string{"code", "code.cmd", "Code.exe"}
+		if runtime.GOOS == "windows" {
+			candidates = append(candidates,
+				joinEnvPath("LOCALAPPDATA", "Programs", "Microsoft VS Code", "Code.exe"),
+				joinEnvPath("ProgramFiles", "Microsoft VS Code", "Code.exe"),
+				joinEnvPath("ProgramFiles(x86)", "Microsoft VS Code", "Code.exe"),
+			)
+		}
+		return candidates
+	case "idea":
+		candidates := []string{"idea", "idea.cmd", "idea64.exe", "idea.exe"}
+		if runtime.GOOS == "windows" {
+			candidates = append(candidates,
+				joinEnvPath("ProgramFiles", "JetBrains", "IntelliJ IDEA", "bin", "idea64.exe"),
+				joinEnvPath("ProgramFiles(x86)", "JetBrains", "IntelliJ IDEA", "bin", "idea64.exe"),
+			)
+			candidates = append(candidates, globEditorCandidates(joinEnvPath("ProgramFiles", "JetBrains", "IntelliJ IDEA*", "bin", "idea64.exe"))...)
+			candidates = append(candidates, globEditorCandidates(joinEnvPath("ProgramFiles(x86)", "JetBrains", "IntelliJ IDEA*", "bin", "idea64.exe"))...)
+			candidates = append(candidates, globEditorCandidates(joinEnvPath("LOCALAPPDATA", "Programs", "JetBrains", "IntelliJ IDEA*", "bin", "idea64.exe"))...)
+			candidates = append(candidates, globEditorCandidates(joinEnvPath("LOCALAPPDATA", "JetBrains", "Toolbox", "apps", "IDEA-U", "ch-*", "*", "bin", "idea64.exe"))...)
+			candidates = append(candidates, globEditorCandidates(joinEnvPath("LOCALAPPDATA", "JetBrains", "Toolbox", "apps", "IDEA-C", "ch-*", "*", "bin", "idea64.exe"))...)
+		}
+		return candidates
+	default:
+		return nil
+	}
+}
+
+func joinEnvPath(envName string, elems ...string) string {
+	root := strings.TrimSpace(os.Getenv(envName))
+	if root == "" {
+		return ""
+	}
+	parts := append([]string{root}, elems...)
+	return filepath.Join(parts...)
+}
+
+func globEditorCandidates(pattern string) []string {
+	if strings.TrimSpace(pattern) == "" {
+		return nil
+	}
+	matches, err := filepath.Glob(pattern)
+	if err != nil {
+		return nil
+	}
+	sort.Sort(sort.Reverse(sort.StringSlice(matches)))
+	return matches
+}
+
+func findFirstExecutable(candidates []string) (string, error) {
+	for _, candidate := range candidates {
+		candidate = strings.TrimSpace(candidate)
+		if candidate == "" {
+			continue
+		}
+		if filepath.IsAbs(candidate) {
+			if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
+				return candidate, nil
+			}
+			continue
+		}
+		if executable, err := exec.LookPath(candidate); err == nil {
+			return executable, nil
+		}
+	}
+	return "", errors.New("executable not found")
+}
+
+func isWindowsCommandScript(path string) bool {
+	extension := strings.ToLower(filepath.Ext(path))
+	return extension == ".cmd" || extension == ".bat"
+}
+
 func updateArgs(mode string, prune bool) []string {
 	if mode == "pull" {
 		return []string{"pull", "--ff-only"}
@@ -1211,6 +1564,17 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func joinCommandOutput(values ...string) string {
+	parts := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			parts = append(parts, value)
+		}
+	}
+	return strings.Join(parts, "\n")
 }
 
 func uniqueStrings(values []string) []string {

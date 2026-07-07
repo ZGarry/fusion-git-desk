@@ -4,28 +4,24 @@ import {
   Check,
   ChevronRight,
   Download,
+  ExternalLink,
+  FileSearch,
   FolderOpen,
   GitBranch,
-  GitCommit,
   GitCompare,
   GitPullRequest,
-  Minus,
-  Pause,
-  Play,
-  Plus,
+  MoreHorizontal,
   RefreshCw,
   RotateCw,
   Search,
+  X,
 } from '@lucide/vue'
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { BrowserOpenURL } from '../wailsjs/runtime/runtime'
 import { api } from './api/backend'
 import type {
   BranchInfo,
   BranchResponse,
-  ChangedFile,
-  DiffFile,
-  DiffMode,
-  DiffResponse,
   Repository,
   Settings,
   UpdateMode,
@@ -40,11 +36,6 @@ interface RepoAdvisory {
   detail: string
 }
 
-interface VirtualChangedFile {
-  file: ChangedFile
-  index: number
-}
-
 const settings = reactive<Settings>({
   lastRoot: '',
   maxDepth: 5,
@@ -53,6 +44,7 @@ const settings = reactive<Settings>({
   autoFetch: false,
   autoPullCleanRepos: false,
   onlyPullCleanRepos: true,
+  ideaPath: '',
   diffDisplayByteLimit: 900000,
 })
 
@@ -61,13 +53,12 @@ const state = reactive({
   booting: true,
   scanning: false,
   updating: false,
-  loadingDiff: false,
   loadingBranches: false,
   checkingOut: '',
-  indexingFile: '',
-  committing: false,
+  openingEditor: '',
   error: '',
   notice: '',
+  scanWarnings: [] as string[],
   lastScan: '',
   autoCycleNote: '自动刷新已暂停',
   autoCycleFailureCount: 0,
@@ -77,31 +68,18 @@ const state = reactive({
 
 const rootInput = ref('')
 const repoFilter = ref('')
-const changedFileFilter = ref('')
-const changedFileListViewport = ref<HTMLElement | null>(null)
-const changedFileScrollTop = ref(0)
-const changedFileViewportHeight = ref(0)
-const commitMessage = ref('')
 const repositories = ref<Repository[]>([])
 const selectedPath = ref('')
-const selectedFilePath = ref('')
-const activeDiffMode = ref<DiffMode>('working')
-const diff = ref<DiffResponse | null>(null)
 const branches = ref<BranchResponse | null>(null)
 const updateResults = ref<UpdateResult[]>([])
+const remoteBranchMenu = ref('')
+const remoteCheckoutCandidate = ref<BranchInfo | null>(null)
 
-const changedFileRowHeight = 34
-const changedFileOverscan = 6
-const changedFileDefaultViewportHeight = 240
-const maxRenderedDiffFiles = 80
-const maxRenderedDiffLines = 4000
 const autoCycleFailureWindowMs = 10 * 60 * 1000
 
 let refreshTimer: number | undefined
 let settingsSaveTimer: number | undefined
-let diffRequestId = 0
 let branchesRequestId = 0
-let changedFileResizeObserver: ResizeObserver | undefined
 
 const filteredRepositories = computed(() => {
   const keyword = repoFilter.value.trim().toLowerCase()
@@ -127,6 +105,7 @@ const repositoryByPath = computed(() => {
 })
 
 const selectedRepo = computed(() => repositoryByPath.value.get(selectedPath.value) ?? null)
+const selectedDeploymentUrl = computed(() => selectedRepo.value ? deploymentUrl(selectedRepo.value) : '')
 
 const repoStats = computed(() => {
   const stats = {
@@ -149,92 +128,34 @@ const repoStats = computed(() => {
   return stats
 })
 
-const selectedFiles = computed(() => selectedRepo.value?.status.files ?? [])
-const selectedFile = computed(() => selectedFiles.value.find((file) => file.path === selectedFilePath.value) ?? null)
+const scanWarningMessage = computed(() => {
+  if (!state.scanWarnings.length) return ''
+  const firstWarning = state.scanWarnings[0]
+  const more = state.scanWarnings.length > 1 ? `，另有 ${state.scanWarnings.length - 1} 个路径也未检查` : ''
+  return `扫描完成，但有 ${state.scanWarnings.length} 个路径未能检查：${firstWarning}${more}`
+})
+
 const selectedPullWarning = computed(() => {
   if (!selectedRepo.value) return ''
   if (selectedRepo.value.status.conflicted > 0) {
-    return '当前仓库存在冲突，建议先解决冲突后再 Pull 或切换分支。'
+    return '当前仓库存在冲突，建议先在编辑器里解决后再拉取或切换分支。'
   }
   if (!selectedRepo.value.hasUpstream) {
-    return '当前分支没有 upstream，Pull 会跳过；Fetch 仍可查看远端分支。'
+    return selectedRepo.value.hasRemote
+      ? '仓库已有远程仓库，但当前分支未设置上游，拉取会跳过。'
+      : '当前仓库没有远程仓库，拉取会跳过。'
   }
   if (selectedRepo.value.isClean || !settings.onlyPullCleanRepos) return ''
-  return '当前仓库有本地改动，Pull 会跳过；Fetch 仍可更新远端引用。'
+  return '当前仓库有本地改动，拉取会跳过；可以先用编辑器提交，或只检查远端状态。'
 })
 const selectedRepoAdvisories = computed(() => selectedRepo.value ? buildRepoAdvisories(selectedRepo.value) : [])
-const selectedRepoHasDanger = computed(() => selectedRepoAdvisories.value.some((item) => item.tone === 'danger'))
-const gitActionBusy = computed(() => state.scanning || state.updating || Boolean(state.indexingFile) || state.committing)
-const selectedFileCanStage = computed(() => Boolean(selectedFile.value && (selectedFile.value.unstaged || selectedFile.value.status === '??')))
-const selectedFileCanUnstage = computed(() => Boolean(selectedFile.value?.staged))
-const selectedStagedFiles = computed(() => selectedFiles.value.filter((file) => file.staged))
-const commitBlockedReason = computed(() => {
-  if (!selectedRepo.value) return '请选择仓库'
-  if (selectedRepo.value.status.conflicted > 0) return '存在冲突'
-  if (selectedStagedFiles.value.length === 0) return '没有已暂存文件'
-  if (!commitMessage.value.trim()) return '请输入提交消息'
-  return ''
-})
-const canCommitSelectedRepo = computed(() => !gitActionBusy.value && !commitBlockedReason.value)
-const fetchAllTitle = computed(() => '全部 Fetch：更新远端引用，不合并到本地工作区。')
-const pullAllTitle = computed(() => summarizePullPreflight(repositories.value, '全部 Pull'))
-const selectedPullTitle = computed(() => selectedRepo.value ? summarizePullPreflight([selectedRepo.value], 'Pull') : 'Pull selected')
-const changedFileKeyword = computed(() => changedFileFilter.value.trim().toLowerCase())
-const filteredSelectedFiles = computed(() => {
-  const keyword = changedFileKeyword.value
-  if (!keyword) return selectedFiles.value
-  return selectedFiles.value.filter((file) => `${file.status} ${file.path} ${file.oldPath ?? ''}`.toLowerCase().includes(keyword))
-})
-const changedFileVirtualRange = computed(() => {
-  const total = filteredSelectedFiles.value.length
-  if (!total) return { start: 0, end: 0 }
-
-  const viewportHeight = Math.max(changedFileViewportHeight.value, changedFileDefaultViewportHeight)
-  const visibleCount = Math.ceil(viewportHeight / changedFileRowHeight)
-  const maxStart = Math.max(0, total - visibleCount)
-  const rawStart = Math.floor(changedFileScrollTop.value / changedFileRowHeight) - changedFileOverscan
-  const start = Math.min(maxStart, Math.max(0, rawStart))
-  const end = Math.min(total, start + visibleCount + changedFileOverscan * 2)
-  return { start, end }
-})
-const renderedSelectedFiles = computed<VirtualChangedFile[]>(() => {
-  const { start, end } = changedFileVirtualRange.value
-  return filteredSelectedFiles.value.slice(start, end).map((file, offset) => ({
-    file,
-    index: start + offset,
-  }))
-})
-const changedFileVirtualHeight = computed(() => `${filteredSelectedFiles.value.length * changedFileRowHeight}px`)
-const changedFileVirtualOffset = computed(() => `translateY(${changedFileVirtualRange.value.start * changedFileRowHeight}px)`)
-const hiddenByFileFilterCount = computed(() => Math.max(0, selectedFiles.value.length - filteredSelectedFiles.value.length))
+const gitActionBusy = computed(() => state.scanning || state.updating || Boolean(state.openingEditor))
+const fetchAllTitle = computed(() => '全部检查远端：更新远端状态，不修改本地代码。')
+const pullAllTitle = computed(() => summarizePullPreflight(repositories.value, '全部拉取代码'))
+const selectedPullTitle = computed(() => selectedRepo.value ? summarizePullPreflight([selectedRepo.value], '拉取代码') : '拉取代码')
 const localBranches = computed(() => (branches.value?.branches ?? []).filter((branch) => !branch.remote))
-const remoteBranches = computed(() => (branches.value?.branches ?? []).filter((branch) => branch.remote))
-const renderedDiff = computed(() => buildRenderedDiff(diff.value))
-const autoCycleAlert = computed(() => {
-  if (state.autoCycleFailureCount === 0) return ''
-  const detail = state.autoCycleLastError ? `：${state.autoCycleLastError}` : ''
-  return `连续失败 ${state.autoCycleFailureCount} 次${detail}`
-})
-const autoCycleWindowAlert = computed(() => {
-  const recentFailureCount = recentAutoCycleFailureCount()
-  if (recentFailureCount <= state.autoCycleFailureCount) return ''
-  return `近 10 分钟失败 ${recentFailureCount} 次（含已恢复）`
-})
-const autoCycleSeverityClass = computed(() => {
-  if (state.autoCycleFailureCount >= 3) return 'danger'
-  if (state.autoCycleFailureCount > 0 || autoCycleWindowAlert.value || state.autoCycleNote.includes('跳过')) return 'warn'
-  return ''
-})
-
+const remoteBranches = computed(() => (branches.value?.branches ?? []).filter((branch) => branch.remote && !isIgnoredRemoteBranch(branch.name)))
 onMounted(async () => {
-  if ('ResizeObserver' in window) {
-    changedFileResizeObserver = new ResizeObserver(updateChangedFileViewportHeight)
-    if (changedFileListViewport.value) {
-      changedFileResizeObserver.observe(changedFileListViewport.value)
-    }
-  }
-  updateChangedFileViewportHeight()
-
   try {
     const initial = await api.getInitialState()
     Object.assign(settings, normalizeSettings(initial.settings))
@@ -259,33 +180,12 @@ onBeforeUnmount(() => {
     window.clearTimeout(settingsSaveTimer)
     void api.saveSettings({ ...settings })
   }
-  changedFileResizeObserver?.disconnect()
 })
 
 watch(selectedPath, () => {
-  selectedFilePath.value = ''
-  changedFileFilter.value = ''
-  commitMessage.value = ''
-  resetChangedFileVirtualScroll()
+  remoteBranchMenu.value = ''
+  remoteCheckoutCandidate.value = null
   void loadSelectedDetails()
-})
-
-watch(changedFileKeyword, () => {
-  resetChangedFileVirtualScroll()
-}, { flush: 'post' })
-
-watch(changedFileListViewport, (viewport, previousViewport) => {
-  if (previousViewport) {
-    changedFileResizeObserver?.unobserve(previousViewport)
-  }
-  if (viewport) {
-    changedFileResizeObserver?.observe(viewport)
-    updateChangedFileViewportHeight()
-  }
-}, { flush: 'post' })
-
-watch(activeDiffMode, () => {
-  void loadDiff()
 })
 
 watch(
@@ -315,6 +215,14 @@ async function chooseRoot() {
   }
 }
 
+async function chooseIdeaPath() {
+  const picked = await api.pickIdeaExecutable()
+  if (picked) {
+    settings.ideaPath = picked
+    await api.saveSettings({ ...settings })
+  }
+}
+
 async function scanRepositories(forceNotice = true) {
   const root = rootInput.value.trim()
   if (!root) {
@@ -326,10 +234,12 @@ async function scanRepositories(forceNotice = true) {
   }
 
   state.error = ''
+  state.scanWarnings = []
   state.scanning = true
   try {
     const response = await api.scanRepositories(root, settings.maxDepth)
     repositories.value = response.repositories ?? []
+    state.scanWarnings = response.warnings ?? []
     state.lastScan = response.scannedAt
     settings.lastRoot = response.root
     settings.maxDepth = response.maxDepth
@@ -379,43 +289,11 @@ async function refreshSelected() {
 
 async function loadSelectedDetails() {
   if (!selectedRepo.value) {
-    diff.value = null
     branches.value = null
     return
   }
 
-  await Promise.all([loadDiff(), loadBranches()])
-}
-
-async function loadDiff() {
-  if (!selectedRepo.value) {
-    diffRequestId++
-    diff.value = null
-    state.loadingDiff = false
-    return
-  }
-
-  const repoPath = selectedRepo.value.path
-  const mode = activeDiffMode.value
-  const filePath = selectedFilePath.value
-  const requestId = ++diffRequestId
-  state.loadingDiff = true
-  try {
-    const nextDiff = filePath
-      ? await api.getRepositoryFileDiff(repoPath, mode, filePath)
-      : await api.getRepositoryDiff(repoPath, mode)
-    if (isCurrentDiffRequest(requestId, repoPath, mode, filePath)) {
-      diff.value = nextDiff
-    }
-  } catch (error) {
-    if (requestId === diffRequestId) {
-      state.error = messageOf(error)
-    }
-  } finally {
-    if (requestId === diffRequestId) {
-      state.loadingDiff = false
-    }
-  }
+  await loadBranches()
 }
 
 async function loadBranches() {
@@ -433,6 +311,10 @@ async function loadBranches() {
     const nextBranches = await api.getBranches(repoPath)
     if (requestId === branchesRequestId && selectedRepo.value?.path === repoPath) {
       branches.value = nextBranches
+      remoteBranchMenu.value = ''
+      if (remoteCheckoutCandidate.value && !nextBranches.branches.some((branch) => branch.name === remoteCheckoutCandidate.value?.name)) {
+        remoteCheckoutCandidate.value = null
+      }
     }
   } catch (error) {
     if (requestId === branchesRequestId) {
@@ -455,19 +337,13 @@ async function updateRepositories(mode: UpdateMode, scope: 'selected' | 'all' = 
   if (paths.length === 0) return null
   if (state.scanning) {
     if (!silent) {
-      state.notice = `扫描或刷新进行中，已跳过${mode === 'pull' ? '拉取' : '获取'}请求`
+      state.notice = `扫描或刷新进行中，已跳过${mode === 'pull' ? '拉取' : '检查远端'}请求`
     }
     return null
   }
   if (state.updating) {
     if (!silent) {
-      state.notice = `已有批量更新进行中，已跳过${mode === 'pull' ? '拉取' : '获取'}请求`
-    }
-    return null
-  }
-  if (state.indexingFile) {
-    if (!silent) {
-      state.notice = `文件暂存操作进行中，已跳过${mode === 'pull' ? '拉取' : '获取'}请求`
+      state.notice = `已有批量更新进行中，已跳过${mode === 'pull' ? '拉取' : '检查远端'}请求`
     }
     return null
   }
@@ -487,7 +363,7 @@ async function updateRepositories(mode: UpdateMode, scope: 'selected' | 'all' = 
         replaceRepository(result.after)
       }
     }
-    void loadSelectedDetails()
+    void loadBranches()
     if (!silent) {
       state.notice = summarizeUpdate(results, mode)
     }
@@ -497,6 +373,32 @@ async function updateRepositories(mode: UpdateMode, scope: 'selected' | 'all' = 
     return null
   } finally {
     state.updating = false
+  }
+}
+
+async function openSelectedRepository(editor: 'vscode' | 'idea') {
+  if (!selectedRepo.value) return
+  if (guardBusyAction('打开项目')) {
+    return
+  }
+
+  const editorLabel = editor === 'vscode' ? 'VS Code' : 'IDEA'
+  state.openingEditor = editor
+  state.error = ''
+  try {
+    if (editor === 'idea') {
+      await api.saveSettings({ ...settings })
+    }
+    const result = await api.openRepository(selectedRepo.value.path, editor)
+    if (!result.success) {
+      state.error = result.message
+      return
+    }
+    state.notice = result.message || `已用 ${editorLabel} 打开 ${selectedRepo.value.name}`
+  } catch (error) {
+    state.error = messageOf(error)
+  } finally {
+    state.openingEditor = ''
   }
 }
 
@@ -523,99 +425,58 @@ async function checkoutBranch(branch: BranchInfo) {
   }
 }
 
-async function stageSelectedFile() {
-  await mutateSelectedFileIndex('stage')
-}
-
-async function unstageSelectedFile() {
-  await mutateSelectedFileIndex('unstage')
-}
-
-async function mutateSelectedFileIndex(action: 'stage' | 'unstage') {
-  if (!selectedRepo.value || !selectedFile.value) return
-  if (guardBusyAction(action === 'stage' ? '暂存文件' : '取消暂存')) {
+async function checkoutRemoteBranch(branch: BranchInfo) {
+  if (!selectedRepo.value || !branch.remote) return
+  if (guardBusyAction('切换远端分支')) {
     return
   }
 
-  const repoPath = selectedRepo.value.path
-  const filePath = selectedFile.value.path
+  state.checkingOut = branch.name
+  remoteCheckoutCandidate.value = null
+  remoteBranchMenu.value = ''
   state.error = ''
-  state.indexingFile = filePath
   try {
-    const result = action === 'stage'
-      ? await api.stageFile(repoPath, filePath)
-      : await api.unstageFile(repoPath, filePath)
+    const result = await api.checkoutRemoteBranch(selectedRepo.value.path, branch.name)
     if (!result.success) {
       state.error = result.message
       return
     }
-
-    const refreshed = await api.refreshRepository(result.path || repoPath)
-    replaceRepository(refreshed)
-    selectedPath.value = refreshed.path
-    const fileStillChanged = refreshed.status.files.some((file) => file.path === filePath || file.oldPath === filePath)
-    if (!fileStillChanged) {
-      selectedFilePath.value = ''
-    }
-    const previousMode = activeDiffMode.value
-    activeDiffMode.value = action === 'stage' ? 'staged' : 'working'
-    if (previousMode === activeDiffMode.value) {
-      void loadDiff()
-    }
     state.notice = result.message
+    await refreshSelected()
   } catch (error) {
     state.error = messageOf(error)
   } finally {
-    state.indexingFile = ''
+    state.checkingOut = ''
   }
 }
 
-async function commitSelectedRepo() {
-  if (!selectedRepo.value) return
-  if (guardBusyAction('提交')) {
-    return
-  }
-  const message = commitMessage.value.trim()
-  if (!message) {
-    state.error = '请输入提交消息'
-    return
-  }
-  if (selectedRepo.value.status.conflicted > 0) {
-    state.error = '当前仓库存在冲突，请先解决冲突后再提交'
-    return
-  }
-  if (selectedStagedFiles.value.length === 0) {
-    state.error = '没有已暂存文件，请先 Stage 要提交的文件'
-    return
-  }
+function toggleRemoteBranchMenu(branch: BranchInfo) {
+  if (gitActionBusy.value || state.checkingOut) return
+  remoteBranchMenu.value = remoteBranchMenu.value === branch.name ? '' : branch.name
+}
 
-  const repoPath = selectedRepo.value.path
-  state.error = ''
-  state.committing = true
-  try {
-    const result = await api.commitRepository(repoPath, message)
-    if (!result.success) {
-      state.error = result.message
-      return
-    }
+function requestRemoteCheckout(branch: BranchInfo) {
+  remoteBranchMenu.value = ''
+  remoteCheckoutCandidate.value = branch
+}
 
-    const refreshed = await api.refreshRepository(result.path || repoPath)
-    replaceRepository(refreshed)
-    selectedPath.value = refreshed.path
-    selectedFilePath.value = ''
-    commitMessage.value = ''
-    const previousMode = activeDiffMode.value
-    activeDiffMode.value = 'head'
-    if (previousMode === activeDiffMode.value) {
-      void loadDiff()
-    }
-    void loadBranches()
-    state.notice = result.message
-  } catch (error) {
-    state.error = messageOf(error)
-  } finally {
-    state.committing = false
+function cancelRemoteCheckout() {
+  remoteCheckoutCandidate.value = null
+}
+
+async function confirmRemoteCheckout() {
+  if (!remoteCheckoutCandidate.value) return
+  await checkoutRemoteBranch(remoteCheckoutCandidate.value)
+}
+
+function openDeploymentPage() {
+  const url = selectedDeploymentUrl.value
+  if (!url) {
+    state.notice = '未识别部署页：当前仓库没有可推导的 GitLab 远端地址'
+    return
   }
+  openExternalUrl(url)
+  state.notice = `已打开部署页 ${url}`
 }
 
 function setupRefreshTimer() {
@@ -643,13 +504,6 @@ function queueSaveSettings() {
     settingsSaveTimer = undefined
     void api.saveSettings({ ...settings })
   }, 250)
-}
-
-function isCurrentDiffRequest(requestId: number, repoPath: string, mode: DiffMode, filePath: string) {
-  return requestId === diffRequestId
-    && selectedRepo.value?.path === repoPath
-    && activeDiffMode.value === mode
-    && selectedFilePath.value === filePath
 }
 
 async function runAutoCycle() {
@@ -690,7 +544,7 @@ async function runAutoCycle() {
   } else if (settings.autoFetch) {
     const results = await updateRepositories('fetch', 'all', true)
     if (!results) {
-      recordAutoCycleFailure(`${modeLabel}结束于 ${finishedAt}`, state.error || '自动获取未返回结果')
+      recordAutoCycleFailure(`${modeLabel}结束于 ${finishedAt}`, state.error || '自动检查远端未返回结果')
       return
     }
     state.autoCycleNote = summarizeAutoCycleUpdate(modeLabel, results, 'fetch', finishedAt)
@@ -717,46 +571,6 @@ function replaceRepository(repo: Repository) {
     repositories.value.splice(index, 1, repo)
   } else {
     repositories.value.push(repo)
-  }
-}
-
-function setDiffMode(mode: DiffMode) {
-  activeDiffMode.value = mode
-}
-
-function selectChangedFile(file: ChangedFile) {
-  selectedFilePath.value = file.path
-  const previousMode = activeDiffMode.value
-  if (file.status === '??' || file.unstaged) {
-    activeDiffMode.value = 'working'
-  } else if (file.staged) {
-    activeDiffMode.value = 'staged'
-  }
-  if (previousMode === activeDiffMode.value) {
-    void loadDiff()
-  }
-}
-
-function clearSelectedFile() {
-  selectedFilePath.value = ''
-  void loadDiff()
-}
-
-function updateChangedFileViewportHeight() {
-  changedFileViewportHeight.value = changedFileListViewport.value?.clientHeight ?? 0
-}
-
-function onChangedFileScroll(event: Event) {
-  const viewport = event.currentTarget as HTMLElement
-  changedFileScrollTop.value = viewport.scrollTop
-  changedFileViewportHeight.value = viewport.clientHeight
-}
-
-function resetChangedFileVirtualScroll() {
-  changedFileScrollTop.value = 0
-  if (changedFileListViewport.value) {
-    changedFileListViewport.value.scrollTop = 0
-    updateChangedFileViewportHeight()
   }
 }
 
@@ -790,14 +604,16 @@ function buildRepoAdvisories(repo: Repository): RepoAdvisory[] {
     advisories.push({
       tone: 'danger',
       label: `存在冲突 ${repo.status.conflicted}`,
-      detail: '先解决冲突并刷新仓库，再执行 Pull、切换分支或提交。',
+      detail: '先用编辑器解决冲突并刷新仓库，再拉取代码或切换分支。',
     })
   }
   if (!repo.hasUpstream) {
     advisories.push({
       tone: 'warn',
-      label: '无 upstream',
-      detail: '当前分支没有跟踪分支；Fetch 可更新远端引用，Pull 会跳过并提示先设置 upstream。',
+      label: repo.hasRemote ? '未设置上游分支' : '无远程仓库',
+      detail: repo.hasRemote
+        ? `仓库已配置远端 ${repo.remoteName || 'remote'}，但当前分支没有跟踪分支；可以检查远端状态，拉取会跳过。`
+        : '当前仓库没有配置 remote；检查远端和拉取都没有可用目标。',
     })
   }
   if (repo.behind > 0 && repo.hasUpstream) {
@@ -805,19 +621,19 @@ function buildRepoAdvisories(repo: Repository): RepoAdvisory[] {
       advisories.push({
         tone: 'warn',
         label: `落后 ${repo.behind} 且有本地改动`,
-        detail: '当前保护策略会跳过 Pull；可以先查看 diff、提交/暂存改动，或只执行 Fetch。',
+        detail: '当前保护策略会跳过拉取；可以先用编辑器提交改动，或只检查远端状态。',
       })
     } else if (repo.isClean) {
       advisories.push({
         tone: 'info',
-        label: `可 Pull ${repo.behind}`,
-        detail: '工作区干净，适合执行 fast-forward Pull。',
+        label: `可拉取 ${repo.behind}`,
+        detail: '工作区没有本地改动，适合执行安全拉取。',
       })
     } else {
       advisories.push({
         tone: 'warn',
         label: `落后 ${repo.behind} 且工作区不干净`,
-        detail: '已关闭“仅干净仓库 Pull”，执行 Pull 前建议先确认本地 diff。',
+        detail: '已关闭保护策略，拉取前建议先用编辑器确认本地改动。',
       })
     }
   }
@@ -825,7 +641,7 @@ function buildRepoAdvisories(repo: Repository): RepoAdvisory[] {
     advisories.push({
       tone: 'info',
       label: `本地领先 ${repo.ahead}`,
-      detail: '本地有提交尚未进入 upstream；检查后可按单仓库粒度 Push。',
+      detail: '本地有提交尚未进入远端；推送能力后续应按单仓库或明确批量策略补齐。',
     })
   }
   if (!repo.isClean && repo.status.conflicted === 0) {
@@ -839,7 +655,7 @@ function buildRepoAdvisories(repo: Repository): RepoAdvisory[] {
     advisories.push({
       tone: 'ok',
       label: '工作区干净',
-      detail: '当前分支与 upstream 没有已知领先/落后，可继续查看代码或 Fetch 更新远端引用。',
+      detail: '当前分支与远端没有已知领先或落后，可以继续查看代码或检查远端状态。',
     })
   }
 
@@ -849,11 +665,13 @@ function buildRepoAdvisories(repo: Repository): RepoAdvisory[] {
 function formatStatusBreakdown(status: Repository['status']) {
   const parts = [
     status.conflicted > 0 ? `冲突 ${status.conflicted}` : '',
-    status.staged > 0 ? `已暂存 ${status.staged}` : '',
-    status.unstaged > 0 ? `未暂存 ${status.unstaged}` : '',
-    status.untracked > 0 ? `未跟踪 ${status.untracked}` : '',
+    status.modified > 0 ? `修改 ${status.modified}` : '',
+    status.added > 0 ? `新增 ${status.added}` : '',
+    status.deleted > 0 ? `删除 ${status.deleted}` : '',
+    status.renamed > 0 ? `改名 ${status.renamed}` : '',
+    status.untracked > 0 ? `新文件 ${status.untracked}` : '',
   ].filter(Boolean)
-  return parts.length ? parts.join('，') : `${status.files.length} 个变更文件`
+  return parts.length ? parts.join('，') : `${status.files.length} 个文件有改动`
 }
 
 function summarizePullPreflight(repos: Repository[], action: string) {
@@ -866,11 +684,11 @@ function summarizePullPreflight(repos: Repository[], action: string) {
   const parts = [
     cleanBehind > 0 ? `${cleanBehind} 个落后且干净` : '',
     protectedDirty > 0 ? `${protectedDirty} 个有本地改动会跳过` : '',
-    noUpstream > 0 ? `${noUpstream} 个无 upstream 会跳过` : '',
+    noUpstream > 0 ? `${noUpstream} 个未设置上游会跳过` : '',
     conflicted > 0 ? `${conflicted} 个有冲突会跳过` : '',
   ].filter(Boolean)
 
-  return `${action}：${parts.length ? parts.join('；') : '执行 git pull --ff-only'}`
+  return `${action}：${parts.length ? parts.join('；') : '执行安全拉取'}`
 }
 
 function branchCheckoutTitle(branch: BranchInfo) {
@@ -880,25 +698,76 @@ function branchCheckoutTitle(branch: BranchInfo) {
   return `切换到 ${branch.name}`
 }
 
-function formatDurationMs(value?: number) {
-  const milliseconds = Number(value ?? 0)
-  if (!Number.isFinite(milliseconds) || milliseconds <= 0) return '0ms'
-  if (milliseconds >= 1000) {
-    const seconds = milliseconds / 1000
-    return `${seconds >= 10 ? seconds.toFixed(0) : seconds.toFixed(1)}s`
-  }
-  return `${Math.round(milliseconds)}ms`
+function missingUpstreamLabel(repo: Repository) {
+  return repo.hasRemote ? '未设置上游' : '无远程仓库'
 }
 
-function scanTimingTitle(repo: Repository) {
-  const timings = repo.timings
-  if (!timings) return ''
-  return [
-    `rev-parse ${formatDurationMs(timings.revParseMs)}`,
-    `status ${formatDurationMs(timings.statusMs)}`,
-    `remote ${formatDurationMs(timings.remoteMs)}`,
-    `log ${formatDurationMs(timings.lastCommitMs)}`,
-  ].join(' | ')
+function remoteBranchCheckoutTitle(branch: BranchInfo) {
+  if (selectedRepo.value?.status.conflicted) return '存在冲突，建议先解决冲突后再切换远端分支'
+  if (selectedRepo.value && !selectedRepo.value.isClean) return '有本地改动，切换分支可能被 Git 拒绝以保护文件'
+  return `拉取 ${branch.name} 并切换到 ${remoteBranchLocalName(branch.name)}`
+}
+
+function remoteBranchLocalName(name: string) {
+  return name.replace(/^[^/]+\//, '')
+}
+
+function isIgnoredRemoteBranch(name: string) {
+  const branchName = remoteBranchLocalName(name)
+  return branchName === 'ai-review' || branchName.startsWith('ai-review/')
+}
+
+function deploymentUrl(repo: Repository) {
+  const webUrl = repositoryWebUrl(repo.remoteUrl)
+  return webUrl ? `${webUrl}/-/pipelines` : ''
+}
+
+function repositoryWebUrl(remoteUrl: string) {
+  const value = remoteUrl.trim()
+  if (!value) return ''
+
+  if (/^https?:\/\//i.test(value)) {
+    try {
+      const url = new URL(value)
+      url.username = ''
+      url.password = ''
+      url.search = ''
+      url.hash = ''
+      url.pathname = trimGitSuffix(url.pathname)
+      return url.toString().replace(/\/$/, '')
+    } catch {
+      return trimGitSuffix(value)
+    }
+  }
+
+  const sshUrl = value.match(/^ssh:\/\/(?:[^@/]+@)?([^/:]+)(?::\d+)?\/(.+)$/i)
+  if (sshUrl) {
+    return `${gitWebProtocol(sshUrl[1])}://${sshUrl[1]}/${trimGitSuffix(sshUrl[2])}`
+  }
+
+  const scpLike = value.match(/^(?:[^@]+@)?([^:]+):(.+)$/)
+  if (scpLike && !/^[a-zA-Z]$/.test(scpLike[1]) && !scpLike[2].startsWith('\\')) {
+    return `${gitWebProtocol(scpLike[1])}://${scpLike[1]}/${trimGitSuffix(scpLike[2])}`
+  }
+
+  return ''
+}
+
+function trimGitSuffix(value: string) {
+  return value.replace(/\/+$/, '').replace(/\.git$/i, '')
+}
+
+function gitWebProtocol(host: string) {
+  return host.toLowerCase() === 'git.fusionfintrade.com' ? 'http' : 'https'
+}
+
+function openExternalUrl(url: string) {
+  const runtimeWindow = window as Window & { runtime?: { BrowserOpenURL?: (url: string) => void } }
+  if (runtimeWindow.runtime?.BrowserOpenURL) {
+    BrowserOpenURL(url)
+    return
+  }
+  window.open(url, '_blank', 'noopener,noreferrer')
 }
 
 function guardBusyAction(action: string, showNotice = true) {
@@ -907,10 +776,8 @@ function guardBusyAction(action: string, showNotice = true) {
     reason = '已有扫描或刷新进行中'
   } else if (state.updating) {
     reason = '批量更新进行中'
-  } else if (state.indexingFile) {
-    reason = '文件暂存操作进行中'
-  } else if (state.committing) {
-    reason = '提交进行中'
+  } else if (state.openingEditor) {
+    reason = '正在打开编辑器'
   }
   if (!reason) {
     return false
@@ -922,8 +789,8 @@ function guardBusyAction(action: string, showNotice = true) {
 }
 
 function autoCycleLabel() {
-  if (settings.autoPullCleanRepos) return 'Auto Pull'
-  if (settings.autoFetch) return 'Auto Fetch'
+  if (settings.autoPullCleanRepos) return '自动拉取'
+  if (settings.autoFetch) return '自动检查远端'
   return '自动刷新'
 }
 
@@ -956,39 +823,6 @@ function pruneAutoCycleFailureTimes(now = Date.now()) {
   state.autoCycleFailureTimes = state.autoCycleFailureTimes.filter((failedAt) => failedAt >= cutoff)
 }
 
-function buildRenderedDiff(source: DiffResponse | null) {
-  if (!source) {
-    return null
-  }
-
-  const files: DiffFile[] = []
-  let renderedLines = 0
-  let hiddenLines = 0
-  let remainingLines = maxRenderedDiffLines
-
-  for (const file of source.files) {
-    if (files.length >= maxRenderedDiffFiles) {
-      hiddenLines += file.lines.length
-      continue
-    }
-
-    const lineCount = file.lines.length
-    const lines = remainingLines > 0 ? file.lines.slice(0, remainingLines) : []
-    renderedLines += lines.length
-    hiddenLines += lineCount - lines.length
-    remainingLines -= lines.length
-    files.push(lines.length === lineCount ? file : { ...file, lines })
-  }
-
-  return {
-    ...source,
-    files,
-    hiddenFiles: Math.max(0, source.files.length - files.length),
-    hiddenLines,
-    renderedLines,
-  }
-}
-
 function formatDate(value: string) {
   if (!value) return ''
   return new Date(value).toLocaleString('zh-CN', {
@@ -1005,6 +839,7 @@ function normalizeSettings(value: Settings): Settings {
     ...value,
     maxDepth: clampNumber(value.maxDepth || 5, 1, 12),
     refreshIntervalSeconds: clampNumber(value.refreshIntervalSeconds || 60, 15, 3600),
+    ideaPath: value.ideaPath || '',
     diffDisplayByteLimit: value.diffDisplayByteLimit || 900000,
   }
 }
@@ -1035,7 +870,7 @@ function summarizeUpdateCounts(results: UpdateResult[], mode: UpdateMode) {
   const success = results.filter((result) => result.success).length
   const skipped = results.filter((result) => result.skipped).length
   const failed = results.length - success - skipped
-  const verb = mode === 'pull' ? '拉取' : '获取'
+  const verb = mode === 'pull' ? '拉取' : '检查远端'
   return { success, skipped, failed, verb }
 }
 
@@ -1046,8 +881,8 @@ function summarizeUpdateDetail(results: UpdateResult[], mode: UpdateMode) {
     const dirtySkipped = skipped.filter((result) => isDirtyWorkingTreeSkip(result))
     if (dirtySkipped.length === skipped.length) {
       return skipped.length === 1
-        ? '工作区有本地改动，已跳过 Pull；可先 Fetch 更新远端引用'
-        : `${skipped.length} 个仓库有本地改动，已跳过 Pull；可先 Fetch 更新远端引用`
+        ? '工作区有本地改动，已跳过拉取；可先检查远端状态'
+        : `${skipped.length} 个仓库有本地改动，已跳过拉取；可先检查远端状态`
     }
     return firstUsefulMessage(skipped) || '部分仓库被跳过'
   }
@@ -1100,11 +935,11 @@ function messageOf(error: unknown) {
       <div class="top-actions">
         <button :title="fetchAllTitle" :disabled="gitActionBusy || repositories.length === 0" @click="updateRepositories('fetch', 'all')">
           <Download :size="17" />
-          全部 Fetch
+          全部检查远端
         </button>
         <button :title="pullAllTitle" :disabled="gitActionBusy || repositories.length === 0" @click="updateRepositories('pull', 'all')">
           <GitPullRequest :size="17" />
-          全部 Pull
+          全部拉取代码
         </button>
       </div>
     </header>
@@ -1132,11 +967,11 @@ function messageOf(error: unknown) {
       </div>
       <div class="metric warn">
         <span>{{ repoStats.noUpstream }}</span>
-        无上游
+        未设置上游
       </div>
       <div class="metric warn">
         <span>{{ repoStats.pullBlocked }}</span>
-        Pull保护
+        拉取保护
       </div>
 
       <div class="toggles">
@@ -1146,11 +981,11 @@ function messageOf(error: unknown) {
         </label>
         <label>
           <input v-model="settings.autoFetch" type="checkbox" />
-          Auto Fetch
+          自动检查远端
         </label>
         <label>
           <input v-model="settings.autoPullCleanRepos" type="checkbox" />
-          Auto Pull
+          自动拉取
         </label>
         <label>
           间隔
@@ -1159,20 +994,10 @@ function messageOf(error: unknown) {
         </label>
         <label>
           <input v-model="settings.onlyPullCleanRepos" type="checkbox" />
-          仅干净仓库 Pull
+          只在无本地改动时拉取
         </label>
       </div>
 
-      <div class="scan-time">
-        <Play v-if="settings.autoRefresh" :size="15" />
-        <Pause v-else :size="15" />
-        <div class="scan-time-copy">
-          <span>{{ state.lastScan ? `上次扫描 ${formatDate(state.lastScan)}` : '未扫描' }}</span>
-          <span class="scan-time-note" :class="autoCycleSeverityClass">{{ state.autoCycleNote }}</span>
-          <span v-if="autoCycleAlert" class="scan-time-note" :class="autoCycleSeverityClass">{{ autoCycleAlert }}</span>
-          <span v-if="autoCycleWindowAlert" class="scan-time-note warn">{{ autoCycleWindowAlert }}</span>
-        </div>
-      </div>
     </section>
 
     <section v-if="!state.hasGit" class="banner danger">
@@ -1182,6 +1007,10 @@ function messageOf(error: unknown) {
     <section v-else-if="state.error" class="banner danger">
       <AlertTriangle :size="18" />
       {{ state.error }}
+    </section>
+    <section v-else-if="scanWarningMessage" class="banner warn">
+      <AlertTriangle :size="18" />
+      {{ scanWarningMessage }}
     </section>
     <section v-else-if="state.notice" class="banner">
       <Check :size="18" />
@@ -1212,12 +1041,11 @@ function messageOf(error: unknown) {
             </div>
             <div class="repo-row-meta">
               <span class="branch-chip"><GitBranch :size="13" /> {{ repo.branch }}</span>
-              <span v-if="repo.timings?.totalMs" class="pill timing" :title="scanTimingTitle(repo)">Scan {{ formatDurationMs(repo.timings?.totalMs) }}</span>
               <span v-if="repo.status.conflicted" class="pill danger">冲突 {{ repo.status.conflicted }}</span>
-              <span v-if="!repo.hasUpstream" class="pill warn">无 upstream</span>
+              <span v-if="!repo.hasUpstream" class="pill warn">{{ missingUpstreamLabel(repo) }}</span>
               <span v-if="repo.ahead" class="pill">领先 {{ repo.ahead }}</span>
               <span v-if="repo.behind" class="pill info">落后 {{ repo.behind }}</span>
-              <span v-if="isPullProtected(repo)" class="pill warn">Pull 保护</span>
+              <span v-if="isPullProtected(repo)" class="pill warn">拉取保护</span>
               <span v-if="changedCount(repo)" class="pill warn">{{ changedCount(repo) }} 改动</span>
               <span v-else class="pill ok">干净</span>
             </div>
@@ -1229,7 +1057,7 @@ function messageOf(error: unknown) {
         </div>
       </aside>
 
-      <section class="diff-panel">
+      <section class="main-panel">
         <div v-if="selectedRepo" class="repo-toolbar">
           <div class="repo-title">
             <h2>{{ selectedRepo.name }}</h2>
@@ -1241,13 +1069,13 @@ function messageOf(error: unknown) {
               <RotateCw :size="17" :class="{ spin: state.scanning }" />
               刷新
             </button>
-            <button title="Fetch selected: 更新远端引用，不会合并到本地工作区" :disabled="gitActionBusy" @click="updateRepositories('fetch', 'selected')">
+            <button title="检查远端状态，不修改本地代码" :disabled="gitActionBusy" @click="updateRepositories('fetch', 'selected')">
               <Download :size="17" />
-              Fetch
+              检查远端
             </button>
             <button :title="selectedPullTitle" :disabled="gitActionBusy" @click="updateRepositories('pull', 'selected')">
               <GitPullRequest :size="17" />
-              Pull
+              拉取代码
             </button>
           </div>
         </div>
@@ -1257,103 +1085,66 @@ function messageOf(error: unknown) {
           <span>{{ selectedRepo.head }}</span>
           <span v-if="selectedRepo.status.conflicted" class="summary-danger">冲突 {{ selectedRepo.status.conflicted }}</span>
           <span v-else-if="!selectedRepo.isClean" class="summary-warn">{{ formatStatusBreakdown(selectedRepo.status) }}</span>
-          <span v-if="selectedRepo.timings?.totalMs" :title="scanTimingTitle(selectedRepo)">Scan {{ formatDurationMs(selectedRepo.timings?.totalMs) }}</span>
-          <span v-if="selectedRepo.upstream">{{ selectedRepo.upstream }}</span>
-          <span v-else class="summary-warn">无 upstream</span>
-          <span v-if="selectedRepo.lastCommit.hash">{{ selectedRepo.lastCommit.hash }} {{ selectedRepo.lastCommit.subject }}</span>
+          <span v-if="selectedRepo.upstream">上游 {{ selectedRepo.upstream }}</span>
+          <span v-else class="summary-warn">{{ missingUpstreamLabel(selectedRepo) }}</span>
+          <span v-if="selectedRepo.lastCommit.hash">最近提交 {{ selectedRepo.lastCommit.hash }} {{ selectedRepo.lastCommit.subject }}</span>
         </div>
 
-        <div v-if="selectedRepo" class="diff-tabs">
-          <button :class="{ active: activeDiffMode === 'working' }" @click="setDiffMode('working')">Working</button>
-          <button :class="{ active: activeDiffMode === 'staged' }" @click="setDiffMode('staged')">Staged</button>
-          <button :class="{ active: activeDiffMode === 'head' }" @click="setDiffMode('head')">HEAD</button>
-        </div>
-
-        <div v-if="selectedRepo && selectedFilePath" class="diff-target">
-          <span>当前文件：{{ selectedFilePath }}<template v-if="selectedFile"> · {{ selectedFile.status }}</template></span>
-          <div class="diff-target-actions">
-            <button title="暂存当前文件" :disabled="gitActionBusy || !selectedFileCanStage" @click="stageSelectedFile">
-              <Plus :size="15" />
-              Stage
-            </button>
-            <button title="取消暂存当前文件" :disabled="gitActionBusy || !selectedFileCanUnstage" @click="unstageSelectedFile">
-              <Minus :size="15" />
-              Unstage
-            </button>
-            <button @click="clearSelectedFile">全部文件</button>
-          </div>
-        </div>
-
-        <div class="diff-scroll">
+        <div class="main-content">
           <div v-if="!selectedRepo" class="empty large">
-            选择仓库查看 diff
+            选择仓库查看状态和分支
           </div>
-          <div v-else-if="state.loadingDiff" class="empty large">
-            加载 diff
-          </div>
-          <div v-else-if="diff?.error" class="empty large danger-text">
-            {{ diff.error }}
-          </div>
-          <div v-else-if="!renderedDiff?.files.length" class="empty large">
-            {{ diff?.note || '当前视图没有 diff' }}
-          </div>
-          <template v-else>
-            <div v-if="renderedDiff.truncated" class="diff-warning">
-              Diff 内容较大，已截断显示。
-            </div>
-            <div v-if="renderedDiff.hiddenFiles || renderedDiff.hiddenLines" class="diff-warning">
-              Diff 较大，当前渲染 {{ renderedDiff.files.length }} 个文件、{{ renderedDiff.renderedLines }} 行；仍有
-              {{ renderedDiff.hiddenFiles }} 个文件、{{ renderedDiff.hiddenLines }} 行未渲染。
-            </div>
-            <div v-if="renderedDiff.note" class="diff-warning">
-              {{ renderedDiff.note }}
-            </div>
-
-            <article v-for="file in renderedDiff.files" :key="`${file.oldPath}-${file.newPath}`" class="diff-file">
-              <header>
-                <div>
-                  <strong>{{ file.newPath || file.oldPath }}</strong>
-                  <span>{{ file.status }}</span>
-                </div>
-                <div class="diff-counts">
-                  <span class="add">+{{ file.additions }}</span>
-                  <span class="delete">-{{ file.deletions }}</span>
-                </div>
-              </header>
-
-              <div class="diff-lines">
-                <div
-                  v-for="(line, index) in file.lines"
-                  :key="`${file.newPath}-${index}`"
-                  class="diff-line"
-                  :class="line.kind"
-                >
-                  <span class="line-no">{{ line.oldLine || '' }}</span>
-                  <span class="line-no">{{ line.newLine || '' }}</span>
-                  <code>{{ line.content }}</code>
+          <template v-else-if="selectedRepo">
+            <section class="overview-section">
+              <div class="overview-head">
+                <h2>下一步</h2>
+              </div>
+              <div class="advisory-list">
+                <div v-for="item in selectedRepoAdvisories" :key="`${item.label}-${item.detail}`" class="advisory-row" :class="item.tone">
+                  <strong>{{ item.label }}</strong>
+                  <small>{{ item.detail }}</small>
                 </div>
               </div>
-            </article>
+            </section>
+
+            <section class="overview-section">
+              <div class="overview-head">
+                <h2>打开项目</h2>
+              </div>
+              <div class="open-actions">
+                <button :disabled="gitActionBusy" @click="openSelectedRepository('vscode')">
+                  <FolderOpen :size="17" />
+                  用 VS Code 打开
+                </button>
+                <button :disabled="gitActionBusy" @click="openSelectedRepository('idea')">
+                  <FolderOpen :size="17" />
+                  用 IDEA 打开
+                </button>
+                <button :title="selectedDeploymentUrl || '未识别 GitLab 远端地址'" :disabled="!selectedDeploymentUrl" @click="openDeploymentPage">
+                  <ExternalLink :size="17" />
+                  打开部署页
+                </button>
+              </div>
+              <div class="editor-setting">
+                <label>
+                  <span>IDEA 路径</span>
+                  <input v-model="settings.ideaPath" spellcheck="false" placeholder="自动查找" />
+                </label>
+                <button title="选择 IDEA 启动程序" :disabled="gitActionBusy" @click="chooseIdeaPath">
+                  <FileSearch :size="17" />
+                  选择
+                </button>
+                <button v-if="settings.ideaPath" title="清空 IDEA 路径" :disabled="gitActionBusy" @click="settings.ideaPath = ''">
+                  <X :size="17" />
+                  清空
+                </button>
+              </div>
+            </section>
           </template>
         </div>
       </section>
 
       <aside class="detail-panel">
-        <section v-if="selectedRepo" class="side-section repo-advisory-section">
-          <div class="side-head">
-            <h2>状态建议</h2>
-            <AlertTriangle v-if="selectedRepoHasDanger" :size="17" />
-            <Check v-else :size="17" />
-          </div>
-
-          <div class="advisory-list">
-            <div v-for="item in selectedRepoAdvisories" :key="`${item.label}-${item.detail}`" class="advisory-row" :class="item.tone">
-              <strong>{{ item.label }}</strong>
-              <small>{{ item.detail }}</small>
-            </div>
-          </div>
-        </section>
-
         <section class="side-section">
           <div class="side-head">
             <h2>分支</h2>
@@ -1381,76 +1172,37 @@ function messageOf(error: unknown) {
 
             <div class="remote-list">
               <h3>远端</h3>
-              <div v-for="branch in remoteBranches" :key="branch.name" class="remote-row">
-                <span>{{ branch.name }}</span>
-                <small>{{ branch.commit }}</small>
-              </div>
+              <template
+                v-for="branch in remoteBranches"
+                :key="branch.name"
+              >
+                <div class="remote-row" :class="{ default: branch.default }">
+                  <span>{{ branch.name }}</span>
+                  <small>
+                    <em v-if="branch.default">默认</em>
+                    {{ branch.commit }}
+                  </small>
+                  <button
+                    class="remote-action-button"
+                    :title="`打开 ${branch.name} 的操作`"
+                    :disabled="Boolean(state.checkingOut) || gitActionBusy"
+                    @click="toggleRemoteBranchMenu(branch)"
+                  >
+                    <MoreHorizontal :size="15" />
+                  </button>
+                </div>
+                <div v-if="remoteBranchMenu === branch.name" class="remote-action-popover">
+                  <strong>{{ remoteBranchLocalName(branch.name) }}</strong>
+                  <small>{{ remoteBranchCheckoutTitle(branch) }}</small>
+                  <button :disabled="Boolean(state.checkingOut) || gitActionBusy" @click="requestRemoteCheckout(branch)">
+                    <GitPullRequest :size="15" />
+                    拉取并切换
+                  </button>
+                </div>
+              </template>
+              <div v-if="!remoteBranches.length" class="empty compact">暂无远端分支</div>
             </div>
           </template>
-        </section>
-
-        <section class="side-section files-section">
-          <div class="side-head">
-            <h2>变更文件</h2>
-            <span>
-              {{ filteredSelectedFiles.length }}
-              <template v-if="changedFileKeyword">/ {{ selectedFiles.length }}</template>
-            </span>
-          </div>
-
-          <div v-if="!selectedFiles.length" class="empty compact">无变更</div>
-          <div v-else>
-            <div class="filter file-filter">
-              <Search :size="15" />
-              <input v-model="changedFileFilter" type="search" placeholder="过滤文件" />
-            </div>
-            <div v-if="!filteredSelectedFiles.length" class="empty compact">无匹配文件</div>
-            <div v-else class="file-list virtual-file-list">
-              <div ref="changedFileListViewport" class="file-list-viewport" @scroll="onChangedFileScroll">
-                <div class="file-list-spacer" :style="{ height: changedFileVirtualHeight }">
-                  <div class="file-list-window" :style="{ transform: changedFileVirtualOffset }">
-                    <button
-                      v-for="item in renderedSelectedFiles"
-                      :key="`${item.file.status}-${item.file.path}-${item.index}`"
-                      class="file-row"
-                      :class="{ active: item.file.path === selectedFilePath }"
-                      @click="selectChangedFile(item.file)"
-                    >
-                      <span class="file-status" :class="{ staged: item.file.staged }">{{ item.file.status }}</span>
-                      <span class="file-name">{{ item.file.path }}</span>
-                    </button>
-                  </div>
-                </div>
-              </div>
-              <div v-if="hiddenByFileFilterCount" class="list-limit-note">
-                已过滤 {{ hiddenByFileFilterCount }} 个变更文件。
-              </div>
-            </div>
-          </div>
-        </section>
-
-        <section v-if="selectedRepo" class="side-section commit-section">
-          <div class="side-head">
-            <h2>提交草稿</h2>
-            <span>{{ selectedStagedFiles.length }} 已暂存</span>
-          </div>
-
-          <div class="commit-box">
-            <textarea
-              v-model="commitMessage"
-              :disabled="gitActionBusy"
-              maxlength="240"
-              placeholder="Commit message"
-              rows="3"
-            />
-            <div class="commit-actions">
-              <small :class="{ warn: Boolean(commitBlockedReason) }">{{ commitBlockedReason || '准备提交当前仓库' }}</small>
-              <button title="提交当前仓库已暂存文件" :disabled="!canCommitSelectedRepo" @click="commitSelectedRepo">
-                <GitCommit :size="15" />
-                Commit
-              </button>
-            </div>
-          </div>
         </section>
 
         <section class="side-section updates-section">
@@ -1470,6 +1222,36 @@ function messageOf(error: unknown) {
           </div>
         </section>
       </aside>
+    </div>
+
+    <div v-if="remoteCheckoutCandidate" class="modal-backdrop" @click.self="cancelRemoteCheckout">
+      <section class="confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="remote-checkout-title">
+        <div class="confirm-head">
+          <h2 id="remote-checkout-title">切换远程分支</h2>
+          <button class="icon-button" title="关闭" :disabled="Boolean(state.checkingOut)" @click="cancelRemoteCheckout">
+            <X :size="16" />
+          </button>
+        </div>
+        <div class="confirm-body">
+          <p>
+            将先拉取 <strong>{{ remoteCheckoutCandidate.name }}</strong>，再切换到本地分支
+            <strong>{{ remoteBranchLocalName(remoteCheckoutCandidate.name) }}</strong>。
+          </p>
+          <p v-if="selectedRepo && !selectedRepo.isClean" class="confirm-warning">
+            当前仓库有本地改动，Git 可能会拒绝切换以保护文件。
+          </p>
+          <p v-if="selectedRepo?.status.conflicted" class="confirm-warning">
+            当前仓库存在冲突，建议先解决冲突后再切换分支。
+          </p>
+        </div>
+        <div class="confirm-actions">
+          <button :disabled="Boolean(state.checkingOut)" @click="cancelRemoteCheckout">取消</button>
+          <button class="primary-button" :disabled="Boolean(state.checkingOut) || gitActionBusy" @click="confirmRemoteCheckout">
+            <GitPullRequest :size="16" />
+            确认拉取并切换
+          </button>
+        </div>
+      </section>
     </div>
   </main>
 </template>

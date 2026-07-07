@@ -1,23 +1,19 @@
 import {
   CheckoutBranch,
-  CommitRepository,
+  CheckoutRemoteBranch,
   GetBranches,
   GetInitialState,
-  GetRepositoryFileDiff,
-  GetRepositoryDiff,
+  OpenRepository,
+  PickIdeaExecutable,
   PickDirectory,
   RefreshRepository,
   SaveSettings,
   ScanRepositories,
-  StageFile,
-  UnstageFile,
   UpdateRepositories,
 } from '../../wailsjs/go/main/App'
 import type {
   BranchResponse,
   CommandResult,
-  DiffMode,
-  DiffResponse,
   InitialState,
   Repository,
   ScanResponse,
@@ -34,6 +30,7 @@ const defaultSettings: Settings = {
   autoFetch: false,
   autoPullCleanRepos: false,
   onlyPullCleanRepos: true,
+  ideaPath: '',
   diffDisplayByteLimit: 900000,
 }
 
@@ -44,7 +41,9 @@ const demoRepo: Repository = {
   branch: 'main',
   head: 'local',
   upstream: 'origin/main',
+  remoteName: 'origin',
   remoteUrl: 'git@example.com:fusion/git-desk.git',
+  hasRemote: true,
   hasUpstream: true,
   isClean: false,
   ahead: 1,
@@ -85,32 +84,6 @@ function hasBridge() {
   return Boolean((window as Window & { go?: unknown }).go)
 }
 
-function demoDiff(mode: DiffMode): DiffResponse {
-  return {
-    path: demoRepo.path,
-    mode,
-    raw: '',
-    truncated: false,
-    generated: new Date().toISOString(),
-    files: [
-      {
-        oldPath: 'frontend/src/App.vue',
-        newPath: 'frontend/src/App.vue',
-        status: 'modified',
-        additions: 3,
-        deletions: 1,
-        lines: [
-          { kind: 'hunk', content: '@@ -12,7 +12,9 @@', oldLine: 0, newLine: 0 },
-          { kind: 'context', content: 'const repositories = ref<Repository[]>([])', oldLine: 12, newLine: 12 },
-          { kind: 'delete', content: 'const selected = ref("")', oldLine: 13, newLine: 0 },
-          { kind: 'add', content: 'const selectedPath = ref("")', oldLine: 0, newLine: 13 },
-          { kind: 'add', content: 'const activeDiffMode = ref<DiffMode>("working")', oldLine: 0, newLine: 14 },
-        ],
-      },
-    ],
-  }
-}
-
 export const api = {
   async getInitialState(): Promise<InitialState> {
     if (!hasBridge()) {
@@ -131,6 +104,13 @@ export const api = {
     return PickDirectory()
   },
 
+  async pickIdeaExecutable(): Promise<string> {
+    if (!hasBridge()) {
+      return window.prompt('IDEA executable') ?? ''
+    }
+    return PickIdeaExecutable()
+  },
+
   async scanRepositories(root: string, maxDepth: number): Promise<ScanResponse> {
     if (!hasBridge()) {
       return {
@@ -138,6 +118,7 @@ export const api = {
         maxDepth,
         repositories: [demoRepo],
         scannedAt: new Date().toISOString(),
+        warnings: [],
       }
     }
     return ScanRepositories(root, maxDepth) as Promise<ScanResponse>
@@ -148,16 +129,6 @@ export const api = {
     return RefreshRepository(path) as Promise<Repository>
   },
 
-  async getRepositoryDiff(path: string, mode: DiffMode): Promise<DiffResponse> {
-    if (!hasBridge()) return demoDiff(mode)
-    return GetRepositoryDiff(path, mode) as Promise<DiffResponse>
-  },
-
-  async getRepositoryFileDiff(path: string, mode: DiffMode, filePath: string): Promise<DiffResponse> {
-    if (!hasBridge()) return { ...demoDiff(mode), target: filePath }
-    return GetRepositoryFileDiff(path, mode, filePath) as Promise<DiffResponse>
-  },
-
   async getBranches(path: string): Promise<BranchResponse> {
     if (!hasBridge()) {
       return {
@@ -165,9 +136,9 @@ export const api = {
         current: demoRepo.branch,
         generated: new Date().toISOString(),
         branches: [
-          { name: 'main', current: true, remote: false, upstream: 'origin/main', commit: 'local', relativeTime: 'just now', subject: 'Create repository dashboard' },
-          { name: 'feature/git-diff', current: false, remote: false, upstream: '', commit: 'a1b2c3d4', relativeTime: '2 hours ago', subject: 'Improve diff view' },
-          { name: 'origin/main', current: false, remote: true, upstream: '', commit: 'e5f6a7b8', relativeTime: '1 day ago', subject: 'Remote baseline' },
+          { name: 'main', current: true, remote: false, default: false, upstream: 'origin/main', commit: 'local', relativeTime: 'just now', subject: 'Create repository dashboard' },
+          { name: 'feature/git-diff', current: false, remote: false, default: false, upstream: '', commit: 'a1b2c3d4', relativeTime: '2 hours ago', subject: 'Improve diff view' },
+          { name: 'origin/main', current: false, remote: true, default: true, upstream: '', commit: 'e5f6a7b8', relativeTime: '1 day ago', subject: 'Remote baseline' },
         ],
       }
     }
@@ -181,55 +152,19 @@ export const api = {
     return CheckoutBranch(path, branch) as Promise<CommandResult>
   },
 
-  async commitRepository(path: string, message: string): Promise<CommandResult> {
+  async checkoutRemoteBranch(path: string, branch: string): Promise<CommandResult> {
     if (!hasBridge()) {
-      const staged = demoRepo.status.files.filter((item) => item.staged)
-      if (!message.trim()) {
-        return { path, command: 'git commit -m <message>', success: false, message: 'commit message is required', stdout: '', stderr: '', finishedAt: new Date().toISOString() }
-      }
-      if (!staged.length) {
-        return { path, command: 'git commit -m <message>', success: false, message: '没有已暂存文件，请先 Stage 要提交的文件', stdout: '', stderr: '', finishedAt: new Date().toISOString() }
-      }
-      demoRepo.status.files = demoRepo.status.files.filter((item) => !item.staged)
-      demoRepo.status.staged = 0
-      demoRepo.status.unstaged = demoRepo.status.files.filter((item) => item.unstaged).length
-      demoRepo.status.untracked = demoRepo.status.files.filter((item) => item.status === '??').length
-      demoRepo.isClean = demoRepo.status.files.length === 0
-      demoRepo.ahead += 1
-      demoRepo.lastCommit = { hash: 'demo', author: 'Codex', relativeTime: 'just now', subject: message.trim() }
-      return { path, command: 'git commit -m <message>', success: true, message: `[main demo] ${message.trim()}`, stdout: '', stderr: '', finishedAt: new Date().toISOString() }
+      return { path, command: `git fetch && git checkout ${branch}`, success: true, message: `已拉取并切换到 ${branch.replace(/^[^/]+\//, '')}`, stdout: '', stderr: '', finishedAt: new Date().toISOString() }
     }
-    return CommitRepository(path, message) as Promise<CommandResult>
+    return CheckoutRemoteBranch(path, branch) as Promise<CommandResult>
   },
 
-  async stageFile(path: string, filePath: string): Promise<CommandResult> {
+  async openRepository(path: string, editor: 'vscode' | 'idea'): Promise<CommandResult> {
     if (!hasBridge()) {
-      const file = demoRepo.status.files.find((item) => item.path === filePath)
-      if (file) {
-        file.staged = true
-        file.unstaged = false
-        if (file.status === '??') file.status = 'A'
-        demoRepo.status.staged = demoRepo.status.files.filter((item) => item.staged).length
-        demoRepo.status.unstaged = demoRepo.status.files.filter((item) => item.unstaged).length
-        demoRepo.status.untracked = demoRepo.status.files.filter((item) => item.status === '??').length
-      }
-      return { path, command: `git add -- ${filePath}`, success: Boolean(file), message: file ? `已暂存 ${filePath}` : '文件不在当前变更列表中，请先刷新仓库', stdout: '', stderr: '', finishedAt: new Date().toISOString() }
+      const label = editor === 'vscode' ? 'VS Code' : 'IDEA'
+      return { path, command: label, success: true, message: `已用 ${label} 打开 ${path}`, stdout: '', stderr: '', finishedAt: new Date().toISOString() }
     }
-    return StageFile(path, filePath) as Promise<CommandResult>
-  },
-
-  async unstageFile(path: string, filePath: string): Promise<CommandResult> {
-    if (!hasBridge()) {
-      const file = demoRepo.status.files.find((item) => item.path === filePath)
-      if (file) {
-        file.staged = false
-        file.unstaged = true
-        demoRepo.status.staged = demoRepo.status.files.filter((item) => item.staged).length
-        demoRepo.status.unstaged = demoRepo.status.files.filter((item) => item.unstaged).length
-      }
-      return { path, command: `git restore --staged -- ${filePath}`, success: Boolean(file), message: file ? `已取消暂存 ${filePath}` : '文件不在当前变更列表中，请先刷新仓库', stdout: '', stderr: '', finishedAt: new Date().toISOString() }
-    }
-    return UnstageFile(path, filePath) as Promise<CommandResult>
+    return OpenRepository(path, editor) as Promise<CommandResult>
   },
 
   async updateRepositories(request: UpdateRequest): Promise<UpdateResult[]> {
@@ -240,8 +175,8 @@ export const api = {
         skipped: request.mode === 'pull' && request.onlyClean && !demoRepo.isClean,
         success: !(request.mode === 'pull' && request.onlyClean && !demoRepo.isClean),
         message: request.mode === 'pull' && request.onlyClean && !demoRepo.isClean
-          ? '工作区有本地改动，已按仅干净仓库 Pull 策略跳过'
-          : request.mode === 'pull' ? 'Already up to date.' : 'Fetched demo remotes.',
+          ? '工作区有本地改动，已按保护策略跳过拉取'
+          : request.mode === 'pull' ? '已经是最新状态。' : '已检查远端状态。',
         stdout: '',
         stderr: '',
         before: demoRepo,

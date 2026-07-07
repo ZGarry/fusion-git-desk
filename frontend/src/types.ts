@@ -6,6 +6,7 @@ export interface Settings {
   autoFetch: boolean
   autoPullCleanRepos: boolean
   onlyPullCleanRepos: boolean
+  ideaPath: string
   diffDisplayByteLimit: number
 }
 
@@ -19,6 +20,7 @@ export interface ScanResponse {
   maxDepth: number
   repositories: Repository[]
   scannedAt: string
+  warnings?: string[]
   error?: string
 }
 
@@ -29,7 +31,9 @@ export interface Repository {
   branch: string
   head: string
   upstream: string
+  remoteName: string
   remoteUrl: string
+  hasRemote: boolean
   hasUpstream: boolean
   isClean: boolean
   ahead: number
@@ -88,6 +92,7 @@ export interface BranchInfo {
   name: string
   current: boolean
   remote: boolean
+  default: boolean
   upstream: string
   commit: string
   relativeTime: string

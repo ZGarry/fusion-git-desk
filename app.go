@@ -49,6 +49,13 @@ func (a *App) PickDirectory() (string, error) {
 	return runtime.OpenDirectoryDialog(a.ctx, runtime.OpenDialogOptions{Title: "Select a workspace folder"})
 }
 
+func (a *App) PickIdeaExecutable() (string, error) {
+	if a.ctx == nil {
+		return "", errors.New("app context is not ready")
+	}
+	return runtime.OpenFileDialog(a.ctx, runtime.OpenDialogOptions{Title: "Select IntelliJ IDEA executable"})
+}
+
 func (a *App) ScanRepositories(root string, maxDepth int) (ScanResponse, error) {
 	root = strings.TrimSpace(root)
 	if root == "" {
@@ -61,12 +68,13 @@ func (a *App) ScanRepositories(root string, maxDepth int) (ScanResponse, error) 
 		maxDepth = MaxScanDepth
 	}
 
-	repositories, err := a.git.Scan(root, maxDepth)
+	repositories, warnings, err := a.git.Scan(root, maxDepth)
 	response := ScanResponse{
 		Root:         root,
 		MaxDepth:     maxDepth,
 		Repositories: repositories,
 		ScannedAt:    nowISO(),
+		Warnings:     warnings,
 	}
 	if err != nil {
 		response.Error = err.Error()
@@ -85,14 +93,6 @@ func (a *App) RefreshRepository(path string) (Repository, error) {
 	return a.git.Inspect(path)
 }
 
-func (a *App) GetRepositoryDiff(path string, mode string) (DiffResponse, error) {
-	return a.git.Diff(path, mode)
-}
-
-func (a *App) GetRepositoryFileDiff(path string, mode string, filePath string) (DiffResponse, error) {
-	return a.git.FileDiff(path, mode, filePath)
-}
-
 func (a *App) GetBranches(path string) (BranchResponse, error) {
 	return a.git.Branches(path)
 }
@@ -101,16 +101,17 @@ func (a *App) CheckoutBranch(path string, branch string) (CommandResult, error) 
 	return a.git.CheckoutBranch(path, branch)
 }
 
-func (a *App) CommitRepository(path string, message string) (CommandResult, error) {
-	return a.git.CommitRepository(path, message)
+func (a *App) CheckoutRemoteBranch(path string, branch string) (CommandResult, error) {
+	return a.git.CheckoutRemoteBranch(path, branch)
 }
 
-func (a *App) StageFile(path string, filePath string) (CommandResult, error) {
-	return a.git.StageFile(path, filePath)
-}
-
-func (a *App) UnstageFile(path string, filePath string) (CommandResult, error) {
-	return a.git.UnstageFile(path, filePath)
+func (a *App) OpenRepository(path string, editor string) (CommandResult, error) {
+	settings, _ := a.settings.Load()
+	configuredExecutable := ""
+	if strings.EqualFold(strings.TrimSpace(editor), "idea") || strings.EqualFold(strings.TrimSpace(editor), "intellij") {
+		configuredExecutable = settings.IdeaPath
+	}
+	return a.git.OpenRepository(path, editor, configuredExecutable)
 }
 
 func (a *App) UpdateRepositories(request UpdateRequest) ([]UpdateResult, error) {

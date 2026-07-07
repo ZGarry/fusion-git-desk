@@ -1,6 +1,8 @@
 package main
 
 import (
+	"errors"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -34,6 +36,34 @@ func TestParseStatusReadsUpstreamAheadBehind(t *testing.T) {
 	}
 	if ahead != 2 || behind != 3 {
 		t.Fatalf("unexpected ahead/behind: %d/%d", ahead, behind)
+	}
+}
+
+func TestParseBranchRefsMarksDefaultAndIgnoresAIReview(t *testing.T) {
+	output := strings.Join([]string{
+		"refs/heads/main\x00main\x00*\x00origin/main\x006b1054bc\x002 hours ago\x00local main\x00",
+		"refs/remotes/origin/HEAD\x00origin/HEAD\x00\x00\x006b1054bc\x002 hours ago\x00\x00origin/main",
+		"refs/remotes/origin/main\x00origin/main\x00\x00\x006b1054bc\x002 hours ago\x00remote main\x00",
+		"refs/remotes/origin/feature/work\x00origin/feature/work\x00\x00\x002c0f9f1a\x001 day ago\x00feature work\x00",
+		"refs/remotes/origin/ai-review/bug_detection/foo\x00origin/ai-review/bug_detection/foo\x00\x00\x00f637512d\x001 day ago\x00ai review\x00",
+	}, "\n")
+
+	branches, current := parseBranchRefs(output)
+
+	if current != "main" {
+		t.Fatalf("unexpected current branch: %s", current)
+	}
+	var foundDefault bool
+	for _, branch := range branches {
+		if strings.Contains(branch.Name, "ai-review") {
+			t.Fatalf("ai-review branch should be ignored: %#v", branch)
+		}
+		if branch.Name == "origin/main" {
+			foundDefault = branch.Default
+		}
+	}
+	if !foundDefault {
+		t.Fatalf("expected origin/main to be marked as default: %#v", branches)
 	}
 }
 
@@ -173,6 +203,151 @@ func TestDurationMillisRoundsPositiveSubmillisecond(t *testing.T) {
 	}
 }
 
+func TestResolveEditorLaunchCommandRejectsUnknownEditor(t *testing.T) {
+	if _, err := resolveEditorLaunchCommand("unknown-editor", t.TempDir(), ""); err == nil {
+		t.Fatal("expected unknown editor to be rejected")
+	}
+}
+
+func TestResolveEditorLaunchCommandPrefersConfiguredExecutable(t *testing.T) {
+	root := t.TempDir()
+	editorPath := filepath.Join(root, "idea64.exe")
+	if err := os.WriteFile(editorPath, []byte("placeholder"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	launch, err := resolveEditorLaunchCommand("idea", root, editorPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if launch.Executable != editorPath {
+		t.Fatalf("expected configured executable %q, got %q", editorPath, launch.Executable)
+	}
+}
+
+func TestFindFirstExecutableAcceptsExistingAbsolutePath(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "editor.exe")
+	if err := os.WriteFile(path, []byte("placeholder"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	executable, err := findFirstExecutable([]string{"", filepath.Join(root, "missing.exe"), path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if executable != path {
+		t.Fatalf("expected %q, got %q", path, executable)
+	}
+}
+
+func TestInspectDetectsNonOriginRemote(t *testing.T) {
+	root := initTestRepo(t)
+	commitTestFile(t, root, "README.md", "hello\n", "initial commit")
+	runTestGit(t, root, "remote", "add", "upstream", "https://example.invalid/fusion.git")
+
+	repo, err := NewGitService().Inspect(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !repo.HasRemote {
+		t.Fatalf("expected remote to be detected: %#v", repo)
+	}
+	if repo.RemoteName != "upstream" {
+		t.Fatalf("expected upstream remote, got %q", repo.RemoteName)
+	}
+	if repo.RemoteURL != "https://example.invalid/fusion.git" {
+		t.Fatalf("unexpected remote URL: %q", repo.RemoteURL)
+	}
+	if repo.HasUpstream {
+		t.Fatalf("remote existence should not imply branch upstream: %#v", repo)
+	}
+}
+
+func TestScanFindsNestedRepositoriesAndRemoteState(t *testing.T) {
+	workspace := t.TempDir()
+	repoA := filepath.Join(workspace, "service-a")
+	repoB := filepath.Join(workspace, "group", "service-b")
+	if err := os.MkdirAll(repoA, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(repoB, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	initExistingTestRepo(t, repoA)
+	initExistingTestRepo(t, repoB)
+	commitTestFile(t, repoA, "README.md", "a\n", "initial commit")
+	commitTestFile(t, repoB, "README.md", "b\n", "initial commit")
+	runTestGit(t, repoA, "remote", "add", "upstream", "https://example.invalid/service-a.git")
+	if err := os.WriteFile(filepath.Join(repoB, "local.txt"), []byte("local\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	repositories, warnings, err := NewGitService().Scan(workspace, 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("expected no warnings, got %#v", warnings)
+	}
+	if len(repositories) != 2 {
+		t.Fatalf("expected 2 repositories, got %#v", repositories)
+	}
+
+	byName := make(map[string]Repository)
+	for _, repo := range repositories {
+		byName[repo.Name] = repo
+	}
+	if !byName["service-a"].HasRemote || byName["service-a"].RemoteName != "upstream" {
+		t.Fatalf("expected service-a remote state, got %#v", byName["service-a"])
+	}
+	if byName["service-a"].HasUpstream {
+		t.Fatalf("remote existence should not imply upstream: %#v", byName["service-a"])
+	}
+	if byName["service-b"].IsClean || byName["service-b"].Status.Untracked != 1 {
+		t.Fatalf("expected service-b local change, got %#v", byName["service-b"])
+	}
+}
+
+func TestScanRepoPathsCollectsWalkWarnings(t *testing.T) {
+	root := t.TempDir()
+	repoPath := filepath.Join(root, "repo")
+	if err := os.MkdirAll(filepath.Join(repoPath, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	blockedPath := filepath.Join(root, "blocked")
+	walkErr := errors.New("access denied")
+
+	paths, warnings, err := scanRepoPaths(root, 5, func(_ string, fn fs.WalkDirFunc) error {
+		call := func(path string, entry fs.DirEntry, err error) error {
+			callbackErr := fn(path, entry, err)
+			if callbackErr != nil && !errors.Is(callbackErr, filepath.SkipDir) {
+				return callbackErr
+			}
+			return nil
+		}
+		if err := call(root, fakeDirEntry{name: filepath.Base(root), dir: true}, nil); err != nil {
+			return err
+		}
+		if err := call(repoPath, fakeDirEntry{name: "repo", dir: true}, nil); err != nil {
+			return err
+		}
+		return call(blockedPath, nil, walkErr)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(paths) != 1 || paths[0] != filepath.Clean(repoPath) {
+		t.Fatalf("expected discovered repo path, got %#v", paths)
+	}
+	if len(warnings) != 1 {
+		t.Fatalf("expected one scan warning, got %#v", warnings)
+	}
+	if !strings.Contains(warnings[0], filepath.Clean(blockedPath)) || !strings.Contains(warnings[0], "access denied") {
+		t.Fatalf("warning should include skipped path and reason, got %q", warnings[0])
+	}
+}
+
 func TestPullSkipsRepositoryWithoutUpstream(t *testing.T) {
 	root := initTestRepo(t)
 	commitTestFile(t, root, "README.md", "hello\n", "initial commit")
@@ -185,8 +360,8 @@ func TestPullSkipsRepositoryWithoutUpstream(t *testing.T) {
 	if result.Success {
 		t.Fatalf("skipped pull should not be marked successful: %#v", result)
 	}
-	if !strings.Contains(result.Message, "upstream") {
-		t.Fatalf("expected upstream guidance in message, got %q", result.Message)
+	if !strings.Contains(result.Message, "远端分支") {
+		t.Fatalf("expected remote branch guidance in message, got %q", result.Message)
 	}
 }
 
@@ -209,6 +384,40 @@ func TestPullSkipsRepositoryWithConflicts(t *testing.T) {
 	}
 	if !strings.Contains(result.Message, "冲突") {
 		t.Fatalf("expected conflict guidance in message, got %q", result.Message)
+	}
+}
+
+func TestCheckoutRemoteBranchFetchesAndTracksBranch(t *testing.T) {
+	workspace := t.TempDir()
+	source := filepath.Join(workspace, "source")
+	client := filepath.Join(workspace, "client")
+	if err := os.MkdirAll(source, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	initExistingTestRepo(t, source)
+	commitTestFile(t, source, "README.md", "main\n", "initial commit")
+	runTestGit(t, source, "checkout", "-b", "feature/remote")
+	commitTestFile(t, source, "feature.txt", "remote\n", "remote feature")
+	runTestGit(t, source, "checkout", "main")
+	runTestGit(t, workspace, "clone", source, client)
+
+	result, err := NewGitService().CheckoutRemoteBranch(client, "origin/feature/remote")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Success {
+		t.Fatalf("expected remote checkout to succeed: %#v", result)
+	}
+	current := strings.TrimSpace(runTestGit(t, client, "branch", "--show-current"))
+	if current != "feature/remote" {
+		t.Fatalf("unexpected current branch: %s", current)
+	}
+	upstream := strings.TrimSpace(runTestGit(t, client, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"))
+	if upstream != "origin/feature/remote" {
+		t.Fatalf("unexpected upstream: %s", upstream)
+	}
+	if _, err := os.Stat(filepath.Join(client, "feature.txt")); err != nil {
+		t.Fatalf("expected remote branch file to be checked out: %v", err)
 	}
 }
 
@@ -357,10 +566,15 @@ func TestSafeRepoPathspecRejectsParentTraversal(t *testing.T) {
 func initTestRepo(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
+	initExistingTestRepo(t, root)
+	return root
+}
+
+func initExistingTestRepo(t *testing.T, root string) {
+	t.Helper()
 	runTestGit(t, root, "init", "-b", "main")
 	runTestGit(t, root, "config", "user.name", "Fusion Git Desk Test")
 	runTestGit(t, root, "config", "user.email", "fusion-git-desk-test@example.invalid")
-	return root
 }
 
 func commitTestFile(t *testing.T, root string, name string, content string, message string) {
@@ -397,4 +611,28 @@ func runTestGitCommand(root string, args ...string) (string, error) {
 	configureHiddenCommand(cmd)
 	output, err := cmd.CombinedOutput()
 	return string(output), err
+}
+
+type fakeDirEntry struct {
+	name string
+	dir  bool
+}
+
+func (e fakeDirEntry) Name() string {
+	return e.name
+}
+
+func (e fakeDirEntry) IsDir() bool {
+	return e.dir
+}
+
+func (e fakeDirEntry) Type() fs.FileMode {
+	if e.dir {
+		return fs.ModeDir
+	}
+	return 0
+}
+
+func (e fakeDirEntry) Info() (fs.FileInfo, error) {
+	return nil, errors.New("fake entry has no file info")
 }
