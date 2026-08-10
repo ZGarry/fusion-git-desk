@@ -114,7 +114,7 @@ build/dist/FusionGitDesk-macos-universal.app.zip
 build/dist/FusionGitDesk-macos-universal.dmg
 ```
 
-推送 `origin/main` 会自动触发 `Fusion Git Desk macOS Package` workflow 并上传 `.zip` 和 `.dmg` artifact；推送 `v*` 标签时还会创建 GitHub Release。普通远程分支不会触发自动打包。也可以在 GitHub Actions 中手动触发该 workflow。
+推送 `origin/main` 会自动触发 `Fusion Git Desk Desktop Package` workflow，并上传 Windows `.exe`/`.zip` 与 macOS `.app.zip`/`.dmg` artifact；推送 `v*` 标签时还会把全部桌面包和 SHA-256 校验文件发布到 GitHub Release。普通远程分支不会触发自动打包，也可以在 GitHub Actions 中手动触发该 workflow。
 
 ## 项目结构
 

@@ -55,5 +55,11 @@ hdiutil create \
   -format UDZO \
   "$DIST_DIR/${APP_NAME}-macos-universal.dmg"
 
+cd "$DIST_DIR"
+shasum -a 256 \
+  "${APP_NAME}-macos-universal.app.zip" \
+  "${APP_NAME}-macos-universal.dmg" \
+  > SHA256SUMS-macos.txt
+
 echo "macOS packages generated:"
 ls -lh "$DIST_DIR"
